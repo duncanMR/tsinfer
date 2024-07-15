@@ -20,12 +20,289 @@
 Ancestor handling routines.
 """
 import logging
+import numpy as np
+import tskit
+import numba
+import attr
+import collections
 import time as time_
 
-import numba
-import numpy as np
+import tsinfer.constants as constants
 
 logger = logging.getLogger(__name__)
+
+
+@attr.s
+class Edge:
+    """
+    A singley linked list of edges.
+    """
+
+    left = attr.ib(default=None)
+    right = attr.ib(default=None)
+    parent = attr.ib(default=None)
+    child = attr.ib(default=None)
+    next = attr.ib(default=None)
+
+
+@attr.s
+class Site:
+    """
+    A single site for the ancestor builder.
+    """
+
+    id = attr.ib()
+    time = attr.ib()
+
+
+class AncestorBuilder:
+    """
+    Builds inferred ancestors.
+    This implementation partially allows for multiple focal sites per ancestor
+    """
+
+    def __init__(
+        self,
+        num_samples,
+        max_sites,
+        genotype_encoding=None,
+    ):
+        self.num_samples = num_samples
+        self.sites = []
+        # Create a mapping from time to sites. Different sites can exist at the same
+        # timepoint. If we expect them to be part of the same ancestor node we can give
+        # them the same ancestor_uid: the time_map contains values keyed by time, with
+        # values consisting of a dictionary, d, of uid=>[array_of_site_ids]
+        # It is handy to be able to add to d without checking, so we make this a
+        # defaultdict of defaultdicts
+        self.time_map = collections.defaultdict(lambda: collections.defaultdict(list))
+        if genotype_encoding is None:
+            genotype_encoding = constants.GenotypeEncoding.EIGHT_BIT
+        self.genotype_encoding = genotype_encoding
+        self.encoded_genotypes_size = num_samples
+        if genotype_encoding == constants.GenotypeEncoding.ONE_BIT:
+            self.encoded_genotypes_size = num_samples // 8 + int((num_samples % 8) != 0)
+        self.genotype_store = np.zeros(
+            max_sites * self.encoded_genotypes_size, dtype=np.uint8
+        )
+
+    @property
+    def num_sites(self):
+        return len(self.sites)
+
+    @property
+    def mem_size(self):
+        # Just here for compatibility with the C implementation.
+        return 0
+
+    def get_site_genotypes_subset(self, site_id, samples):
+        start = site_id * self.encoded_genotypes_size
+        g = np.zeros(len(samples), dtype=np.int8)
+        if self.genotype_encoding == constants.GenotypeEncoding.ONE_BIT:
+            for j, u in enumerate(samples):
+                byte_index = u // 8
+                bit_index = u % 8
+                byte = self.genotype_store[start + byte_index]
+                mask = 1 << bit_index
+                g[j] = int((byte & mask) != 0)
+        else:
+            for j, u in enumerate(samples):
+                g[j] = self.genotype_store[start + u]
+        gp = self.get_site_genotypes(site_id)
+        np.testing.assert_array_equal(gp[samples], g)
+        return g
+
+    def get_site_genotypes(self, site_id):
+        start = site_id * self.encoded_genotypes_size
+        stop = start + self.encoded_genotypes_size
+        g = self.genotype_store[start:stop]
+        if self.genotype_encoding == constants.GenotypeEncoding.ONE_BIT:
+            g = np.unpackbits(g, bitorder="little")[: self.num_samples]
+        g = g.astype(np.int8)
+        return g
+
+    def store_site_genotypes(self, site_id, genotypes):
+        if self.genotype_encoding == constants.GenotypeEncoding.ONE_BIT:
+            assert np.all(genotypes >= 0) and np.all(genotypes <= 1)
+            genotypes = np.packbits(genotypes, bitorder="little")
+        start = site_id * self.encoded_genotypes_size
+        stop = start + self.encoded_genotypes_size
+        self.genotype_store[start:stop] = genotypes
+
+    def add_site(self, time, genotypes):
+        """
+        Adds a new site at the specified ID to the builder.
+        """
+        site_id = len(self.sites)
+        self.store_site_genotypes(site_id, genotypes)
+        self.sites.append(Site(site_id, time))
+        sites_at_fixed_timepoint = self.time_map[time]
+        # Sites with an identical variant distribution (i.e. with the same
+        # genotypes.tobytes() value) and at the same time, are put into the same ancestor
+        # to which we allocate a unique ID (just use the genotypes value)
+        ancestor_uid = genotypes.tobytes()
+        # Add each site to the list for this ancestor_uid at this timepoint
+        sites_at_fixed_timepoint[ancestor_uid].append(site_id)
+
+    def print_state(self, return_str=False):
+        string = "Current state of ancestor builder:\nSites:\n"
+        for j in range(self.num_sites):
+            site = self.sites[j]
+            genotypes = self.get_site_genotypes(j)
+            string += f" {j}\t{genotypes}\t{site.time:.3f}\n"
+        string += "Time map:\n"
+        for t in sorted(self.time_map.keys()):
+            sites_at_fixed_timepoint = self.time_map[t]
+            if len(sites_at_fixed_timepoint) > 0:
+                string += f" t = {t:.3f} with {len(sites_at_fixed_timepoint)} ancestors\n"
+                for ancestor, sites in sites_at_fixed_timepoint.items():
+                    string += f"\t{ancestor} : {sites}\n"
+        string += "Ancestor descriptors:\n"
+        for t, focal_sites in self.ancestor_descriptors():
+            string += f"\tt = {t:.3f}, sites = {focal_sites}\n"
+        if return_str is True:
+            return string
+        else:
+            print(string)
+
+    def break_ancestor(self, a, b, samples):
+        """
+        Returns True if we should split the ancestor with focal sites at
+        a and b into two separate ancestors (if there is an older site between them
+        which is not compatible with the focal site distribution)
+        """
+        # return True
+        for j in range(a + 1, b):
+            if self.sites[j].time > self.sites[a].time:
+                gj = self.get_site_genotypes_subset(j, samples)
+                gj = gj[gj != tskit.MISSING_DATA]
+                if not (np.all(gj == 1) or np.all(gj == 0)):
+                    return True
+        return False
+
+    def ancestor_descriptors(self):
+        """
+        Returns a list of (time, focal_sites) tuples describing the ancestors in
+        in arbitrary order.
+        """
+        ret = []
+        for t in self.time_map.keys():
+            for focal_sites in self.time_map[t].values():
+                genotypes = self.get_site_genotypes(focal_sites[0])
+                samples = np.where(genotypes == 1)[0]
+                start = 0
+                for j in range(len(focal_sites) - 1):
+                    if self.break_ancestor(focal_sites[j], focal_sites[j + 1], samples):
+                        ret.append((t, focal_sites[start : j + 1]))
+                        start = j + 1
+                ret.append((t, focal_sites[start:]))
+        return ret
+
+    def compute_ancestral_states(self, a, focal_site, sites):
+        """
+        For a given focal site, and set of sites to fill in (usually all the ones
+        leftwards or rightwards), augment the haplotype array a with the inferred sites
+        Together with `make_ancestor`, which calls this function, these describe the main
+        algorithm as implemented in Fig S2 of the preprint, with the buffer.
+
+        At the moment we assume that the derived state is 1. We should alter this so
+        that we allow the derived state to be a different non-zero integer.
+        """
+        focal_time = self.sites[focal_site].time
+        g = self.get_site_genotypes(focal_site)
+        S = set(np.where(g == 1)[0])
+        
+        # Break when we've lost half of S
+        min_sample_set_size = len(S) // 2
+        remove_buffer = []
+        last_site = focal_site
+        logging.info(f"\tFocal: {focal_site}; time: {focal_time:.3f}; num_sites: {len(sites)}")
+        for site_index in sites:
+            a[site_index] = 0
+            last_site = site_index
+            if self.sites[site_index].time > focal_time:
+                g_l = self.get_site_genotypes(site_index)
+                ones = sum(g_l[u] == 1 for u in S)
+                zeros = sum(g_l[u] == 0 for u in S)
+                if ones + zeros == 0:
+                    logging.info(f"\t\tMissing data at site {site_index}")
+                    a[site_index] = tskit.MISSING_DATA
+                else:
+                    consensus = 1 if ones >= zeros else 0
+                    logging.info(f"\t\tSite: {site_index}; Ones: {ones}; Zeros:{zeros} ⇒ Consensus: {consensus}")
+                    for u in remove_buffer:
+                        if g_l[u] != consensus and g_l[u] != tskit.MISSING_DATA:
+                            logging.info(f"\t\t\tRemoving {u}")
+                            S.remove(u)
+                    a[site_index] = consensus
+                    #logging.info(f"\t{len(S)}\t{remove_buffer}\t{consensus}")
+                    if len(S) <= min_sample_set_size:
+                        logging.info(f"\t\t\tBreaking {len(S)} {min_sample_set_size}")
+                        break
+                    remove_buffer.clear()
+                    for u in S:
+                        if g_l[u] != consensus and g_l[u] != tskit.MISSING_DATA:
+                            remove_buffer.append(u)
+        assert a[last_site] != tskit.MISSING_DATA
+        return last_site
+
+    def make_ancestor(self, focal_sites, a):
+        """
+        Fills out the array a with the haplotype
+        return the start and end of an ancestor
+        """
+        focal_time = self.sites[focal_sites[0]].time
+        # check all focal sites in this ancestor are at the same timepoint
+        assert all([self.sites[fs].time == focal_time for fs in focal_sites])
+        logging.info(f"Building ancestor for site(s) {focal_sites}")
+        a[:] = tskit.MISSING_DATA
+        for focal_site in focal_sites:
+            a[focal_site] = 1
+        g = self.get_site_genotypes(focal_sites[0])
+
+        S = set(np.where(g == 1)[0])
+        logging.info(f"S = {S}, Genotype: {g}")
+        if len(S) == 0:
+            raise ValueError("Cannot compute ancestor for a site at freq 0")
+        # Interpolate ancestral haplotype within focal region (i.e. region
+        #  spanning from leftmost to rightmost focal site)
+        for j in range(len(focal_sites) - 1):
+            # Interpolate region between focal site j and focal site j+1
+            
+            for site_index in range(focal_sites[j] + 1, focal_sites[j + 1]):
+                a[site_index] = 0
+                if self.sites[site_index].time > focal_time:
+                    g_l = self.get_site_genotypes(site_index)
+                    ones = sum(g_l[u] == 1 for u in S)
+                    zeros = sum(g_l[u] == 0 for u in S)
+                    logging.info(f"\t{site_index}\t{ones}\t{zeros}")
+                    if ones + zeros == 0:
+                        a[site_index] = tskit.MISSING_DATA
+                    elif ones >= zeros:
+                        a[site_index] = 1
+        # Extend ancestral haplotype rightwards from rightmost focal site
+        logging.info("Extending rightwards")
+        focal_site = focal_sites[-1]
+        last_site = self.compute_ancestral_states(
+            a, focal_site, range(focal_site + 1, self.num_sites)
+        )
+        end = last_site + 1
+        # Extend ancestral haplotype leftwards from leftmost focal site
+        logging.info("Extending leftwards")
+        focal_site = focal_sites[0]
+        last_site = self.compute_ancestral_states(
+            a, focal_site, range(focal_site - 1, -1, -1)
+        )
+        start = last_site
+        logging.info(f"Final ancestor: {a} (start: {start}; end: {end})")
+        return start, end
+
+
+
+
+
+
+
 
 
 def merge_overlapping_ancestors(start, end, time):

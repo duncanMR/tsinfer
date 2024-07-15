@@ -10,7 +10,10 @@ import PIL.Image as Image
 import PIL.ImageColor as ImageColor
 import PIL.ImageDraw as ImageDraw
 import PIL.ImageFont as ImageFont
+from IPython.display import SVG, display
+import tempfile
 import svgwrite
+import tskit
 
 import tsinfer
 
@@ -37,8 +40,11 @@ class AncestorBuilderViz:
         return self.height - (self.y_pad + v * self.y_unit)
 
     def draw_matrix(self, dwg, focal_sites, ancestor, current_site=None):
-        A = self.sample_data.sites_genotypes[:].T
+        A_t = self.sample_data.sites_genotypes[:]
+        fixed_sites = np.all(A_t == A_t[:, [0]], axis=1)
+        A = (A_t[~fixed_sites]).T
         n, m = A.shape
+        print(f"n={n}, m={m}")
 
         for site in focal_sites:
             dwg.add(
@@ -76,19 +82,19 @@ class AncestorBuilderViz:
                 )
             )
 
-    def draw(self, ancestor_id, filename_pattern):
-        start = self.ancestor_data.ancestors_start[ancestor_id]
-        end = self.ancestor_data.ancestors_end[ancestor_id]
-        focal_sites = self.ancestor_data.ancestors_focal_sites[ancestor_id]
-        a = np.zeros(self.sample_data.num_sites, dtype=int)
-        a[:] = -1
-        a[start:end] = self.ancestor_data.ancestors_haplotype[ancestor_id]
-        print(start, end, focal_sites, a)
+    def draw(self, ancestor_id):
+        anc = self.ancestor_data.ancestor(ancestor_id)
+        focal_sites = anc.focal_sites
+        a = anc.full_haplotype
 
         dwg = svgwrite.Drawing(size=(self.width, self.height), debug=True)
         self.draw_matrix(dwg, focal_sites, a)
-        with open(filename_pattern.format(0), "w") as f:
-            f.write(dwg.tostring())
+        #with open(filename_pattern.format(0), "w") as f:
+        #    f.write(dwg.tostring())
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as f:
+            f.write(dwg.tostring().encode('utf-8'))
+            temp_filename = f.name
+        display(SVG(filename=temp_filename))
 
 
 def draw_edges(ts, width=800, height=600):
@@ -136,7 +142,7 @@ def draw_edges(ts, width=800, height=600):
         assert len(site.mutations) >= 1
         mutation = site.mutations[0]
         a = x_trans(site.position), y_trans(mutation.node)
-        dwg.add(dwg.circle(center=a, r=1, fill="red"))
+        dwg.add(dwg.circle(center=a, r=5, fill="red"))
         for mutation in site.mutations[1:]:
             a = x_trans(site.position), y_trans(mutation.node)
             dwg.add(dwg.circle(center=a, r=1, fill="blue"))
@@ -214,12 +220,11 @@ class Visualiser:
         node_time = inferred_ts.tables.nodes.time
         self.num_ancestors = np.where(node_time > 0)[0].shape[0]
         self.ancestors = np.zeros(
-            (self.num_ancestors, original_ts.num_sites), dtype=np.uint8
-        )
+            (self.num_ancestors, original_ts.num_sites), dtype=np.uint8)
         for j, a in enumerate(ancestor_data.ancestors()):
             self.ancestors[j, a.start : a.end] = a.haplotype
-            self.ancestors[j, : a.start] = tsinfer.UNKNOWN_ALLELE
-            self.ancestors[j, a.end :] = tsinfer.UNKNOWN_ALLELE
+            self.ancestors[j, : a.start] = tskit.MISSING_DATA
+            self.ancestors[j, a.end :] = tskit.MISSING_DATA
 
         # TODO This only partially works for extra ancestors created by path
         # compression. We'll get -1 lines for extra ancestors created from
@@ -240,13 +245,13 @@ class Visualiser:
         self.copying_outline_colour = ImageColor.getrgb("white")
         self.colours = {
             255: ImageColor.getrgb("pink"),
-            0: ImageColor.getrgb("blue"),
-            1: ImageColor.getrgb("red"),
+            0: ImageColor.getrgb("#4dabf7"),
+            1: ImageColor.getrgb("#ff8787"),
         }
         self.copy_colours = {
             255: ImageColor.getrgb("white"),
-            0: ImageColor.getrgb("black"),
-            1: ImageColor.getrgb("green"),
+            0: ImageColor.getrgb("#1971c2"),
+            1: ImageColor.getrgb("#800000"),
         }
         self.error_colours = {
             0: ImageColor.getrgb("purple"),
@@ -281,7 +286,6 @@ class Visualiser:
         self.base_image = Image.new(
             "RGB", (self.width, self.height), color=self.background_colour
         )
-
         b = self.box_size
         origin = self.haplotype_origin
         self.x_coordinate_map = {
@@ -324,7 +328,9 @@ class Visualiser:
     def draw_base_haplotypes(self, draw):
         b = self.box_size
         origin = self.haplotype_origin
+        print(f'origin: {origin}')
         for node in self.row_map.keys():
+            print(f'Drawing node {node} at row {self.row_map[node]}')
             y = self.row_map[node] * b + origin[1] + b / 2
             x = origin[0]
             draw.text((x - b, y), str(node), fill="black")
@@ -383,38 +389,46 @@ class Visualiser:
         # Draw the positions of the sites.
         font = ImageFont.load_default()
         for site in self.original_ts.sites():
-            label = f"{site.id} {site.position:.6f}"
-            img_txt = Image.new("L", font.getsize(label), color="white")
+            label = f"{site.id}: {site.position}"
+            # Use draw.textbbox to get the size of the text
+            bbox = draw.textbbox((0, 0), label, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            img_txt = Image.new("L", (text_width, text_height), color="white")
             draw_txt = ImageDraw.Draw(img_txt)
             draw_txt.text((0, 0), label, font=font)
             t = img_txt.rotate(90, expand=1)
             x = origin[0] + site.id * b
             y = origin[1] - b
             image.paste(t, (x, y))
-        # print("Saving", filename)
         image.save(filename)
+            
 
     def draw_copying_paths(self, pattern):
         N = self.num_ancestors + self.samples.shape[0]
         P = np.zeros((N, self.num_sites), dtype=int) - 1
         ts = self.inferred_ts
         site_index = {}
-        sites = list(ts.sites())
-        for site in ts.sites():
+        sites = list(self.original_ts.sites())
+        for site in self.original_ts.sites():
             site_index[site.position] = site.id
-        site_index[ts.sequence_length] = ts.num_sites
+        site_index[ts.sequence_length] = self.original_ts.num_sites
         site_index[0] = 0
         for e in ts.edges():
             left = site_index[e.left]
             right = site_index[e.right]
             assert left < right
+            #print(f'{e.child}s parent is {e.parent} from {left} to {right}')
             P[e.child, left:right] = e.parent
+            #print(P)
+        print(P)
         n = self.samples.shape[0]
         breakpoints = []
         for j in range(1, self.num_ancestors + n):
+            print(f'Drawing copying path for {j} with parent P[j] = {P[j]}')
             for k in np.where(P[j][1:] != P[j][:-1])[0]:
                 breakpoints.append(sites[k + 1].position)
-            self.draw_copying_path(pattern.format(j - 1), j, P[j], breakpoints)
+            self.draw_copying_path(pattern.format(j), j, P[j], breakpoints)
 
 
 def visualise(
@@ -446,15 +460,13 @@ def visualise(
         ancestor_data,
         engine=engine,
         path_compression=path_compression,
-        extended_checks=True,
     )
     inferred_ts = tsinfer.match_samples(
         sample_data,
         ancestors_ts,
         engine=engine,
-        simplify=False,
+        post_process=False,
         path_compression=path_compression,
-        extended_checks=True,
     )
 
     prefix = "tmp__NOBACKUP__/"
@@ -468,9 +480,8 @@ def visualise(
         sample_data,
         ancestors_ts,
         engine=engine,
-        simplify=True,
+        post_process=True,
         path_compression=False,
-        stabilise_node_ordering=True,
     )
 
     tsinfer.print_tree_pairs(ts, inferred_ts, compute_distances=True)
@@ -495,28 +506,32 @@ def visualise(
 def run_viz(
     n,
     L,
-    rate,
+    recombination_rate,
     seed,
     mutation_rate=0,
     engine="C",
     perfect_ancestors=True,
-    perfect_mutations=True,
+    perfect_mutations=False,
     path_compression=False,
     time_chunking=True,
     error_rate=0,
 ):
-    recomb_map = msprime.RecombinationMap.uniform_map(length=L, rate=rate, num_loci=L)
-    ts = msprime.simulate(
-        n,
-        recombination_map=recomb_map,
-        random_seed=seed,
-        model="smc_prime",
-        mutation_rate=mutation_rate,
-    )
+    #ts0 = msprime.sim_ancestry(n, sequence_length=L, random_seed=seed, recombination_rate=recombination_rate)
+    #ts = msprime.sim_mutations(ts0, rate=mutation_rate, random_seed=seed)
+    base_ts = msprime.sim_ancestry(3, sequence_length=1000, random_seed=5, recombination_rate=recombination_rate)
+    ts = msprime.sim_mutations(base_ts, rate=mutation_rate,random_seed=4, model='binary')
+    # ts = msprime.simulate(
+    #     n,
+    #     recombination_map=recomb_map,
+    #     random_seed=seed,
+    #     model="smc_prime",
+    #     mutation_rate=mutation_rate,
+    # )
+
     if perfect_mutations:
         ts = tsinfer.insert_perfect_mutations(ts, delta=1 / 512)
     else:
-        ts = tsinfer.strip_singletons(tsinfer.insert_errors(ts, error_rate, seed))
+        ts = tsinfer.strip_singletons(ts)
     print("num_sites = ", ts.num_sites)
 
     with open("tmp__NOBACKUP__/edges.svg", "w") as f:
@@ -525,8 +540,8 @@ def run_viz(
         f.write(draw_ancestors(ts))
     visualise(
         ts,
-        rate,
-        0,
+        recombination_rate,
+        error_rate=0,
         engine=engine,
         box_size=26,
         perfect_ancestors=perfect_ancestors,
@@ -554,7 +569,7 @@ def main():
     #     perfect_mutations=True, time_chunking=True, engine="C", path_compression=False,
     #     error_rate=0.00)
 
-    run_viz(15, 1000, 0.002, 2, engine=tsinfer.PY_ENGINE, perfect_ancestors=False)
+    run_viz(12, 500, recombination_rate=0.004, mutation_rate=0.001, seed=2, engine=tsinfer.C_ENGINE, perfect_ancestors=False)
 
 
 if __name__ == "__main__":

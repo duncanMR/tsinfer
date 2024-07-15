@@ -49,6 +49,7 @@ import tsinfer.progress as progress
 import tsinfer.provenance as provenance
 import tsinfer.threads as threads
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -475,6 +476,7 @@ def generate_ancestors(
         # TODO should we provide some functionality to automatically figure
         # out what the minimum encoding is?
         genotype_encoding = constants.GenotypeEncoding.EIGHT_BIT
+
     generator = AncestorsGenerator(
         sample_data,
         ancestor_data_path=path,
@@ -484,7 +486,7 @@ def generate_ancestors(
         genotype_encoding=genotype_encoding,
         mmap_temp_dir=mmap_temp_dir,
         progress_monitor=progress_monitor,
-    )
+        )
     generator.add_sites(exclude_positions)
     ancestor_data = generator.run()
     for timestamp, record in sample_data.provenances():
@@ -1413,6 +1415,7 @@ class AncestorsGenerator:
         self.num_samples = sample_data.num_samples
         self.num_threads = num_threads
         self.mmap_temp_file = None
+        self.engine = engine
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1437,6 +1440,13 @@ class AncestorsGenerator:
         elif engine == constants.PY_ENGINE:
             logger.debug("Using Python AncestorBuilder implementation")
             self.ancestor_builder = algorithm.AncestorBuilder(
+                self.num_samples,
+                self.max_sites,
+                genotype_encoding=genotype_encoding,
+            )
+        elif engine == constants.NUMBA_ENGINE:
+            logger.debug("Using Numba AncestorBuilder implementation")
+            self.ancestor_builder = ancestors.AncestorBuilder(
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
@@ -1468,7 +1478,7 @@ class AncestorsGenerator:
                 raise ValueError("exclude_positions must be a 1D array of numbers")
         exclude_positions = set(exclude_positions)
 
-        logger.info(f"Starting addition of {self.max_sites} sites")
+        logger.info(f"Starting addition of up to {self.max_sites} sites")
         progress = self.progress_monitor.get("ga_add_sites", self.max_sites)
         inference_site_id = []
         for variant in self.sample_data.variants(recode_ancestral=True):
@@ -1491,6 +1501,7 @@ class AncestorsGenerator:
                     assert counts.known != counts.derived
                     assert counts.known != counts.ancestral
                     time = counts.derived / counts.known
+                    logging.info(f"site: {site.id-1}, time={counts.derived}/{counts.ancestral}={time}")
                 if np.isnan(time):
                     use_site = False  # Site with meaningless time value: skip inference
             if use_site:
@@ -1500,7 +1511,9 @@ class AncestorsGenerator:
             progress.update()
         progress.close()
         self.inference_site_ids = inference_site_id
-        logger.info("Finished adding sites")
+        logger.info(f"Finished adding {self.num_sites} sites")
+        if self.engine == constants.NUMBA_ENGINE:
+            logger.info(self.ancestor_builder.print_state(return_str=True))
 
     def _run_synchronous(self, progress):
         a = np.zeros(self.num_sites, dtype=np.int8)
@@ -1780,7 +1793,6 @@ class Matcher:
                     "Recombination and mismatch probabilities calculated from "
                     + f"specified recomb rates with mismatch ratio = {mismatch_ratio}"
                 )
-
         if len(recombination) != num_intervals:
             raise ValueError("Bad length for recombination array")
         if len(mismatch) != self.num_sites:
