@@ -1511,7 +1511,7 @@ class AncestorsGenerator:
             progress.update()
         progress.close()
         self.inference_site_ids = inference_site_id
-        logger.info(f"Finished adding {self.num_sites} sites")
+        logger.debug(f"Finished adding {self.num_sites} sites")
         if self.engine == constants.NUMBA_ENGINE:
             logger.info(self.ancestor_builder.print_state(return_str=True))
 
@@ -1715,6 +1715,9 @@ class Matcher:
         progress_monitor=None,
         allow_multiallele=False,
     ):
+        
+        if engine == constants.NUMBA_ENGINE:
+            engine = constants.PY_ENGINE
         self.sample_data = sample_data
         self.num_threads = num_threads
         self.path_compression = path_compression

@@ -443,21 +443,21 @@ class TestPerfectInference:
 
     def test_single_tree_defaults(self):
         base_ts = msprime.simulate(5, random_seed=234)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(base_ts, engine=engine)
             self.verify_perfect_inference(ts, inferred_ts)
 
     def test_small_smc(self):
         base_ts = get_smc_simulation(5, L=1, recombination_rate=10, seed=111)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(base_ts, engine=engine)
             self.verify_perfect_inference(ts, inferred_ts)
 
     def test_small_use_ts(self):
         base_ts = msprime.simulate(5, recombination_rate=10, random_seed=112)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(
                 base_ts, use_ts=True, engine=engine
             )
@@ -466,7 +466,7 @@ class TestPerfectInference:
     def test_small_smc_path_compression(self):
         base_ts = get_smc_simulation(5, L=1, recombination_rate=10, seed=111)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(
                 base_ts, engine=engine, path_compression=True
             )
@@ -478,7 +478,7 @@ class TestPerfectInference:
     def test_small_use_ts_path_compression(self):
         base_ts = msprime.simulate(5, recombination_rate=10, random_seed=112)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(
                 base_ts, use_ts=True, path_compression=True, engine=engine
             )
@@ -505,7 +505,7 @@ class TestPerfectInference:
     def test_small_smc_threads(self):
         base_ts = get_smc_simulation(5, L=1, recombination_rate=10, seed=112)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(
                 base_ts, engine=engine, num_threads=4
             )
@@ -515,7 +515,7 @@ class TestPerfectInference:
     def test_small_smc_no_time_chunking(self):
         base_ts = get_smc_simulation(10, L=1, recombination_rate=10, seed=113)
         assert base_ts.num_trees > 1
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts, inferred_ts = tsinfer.run_perfect_inference(
                 base_ts, engine=engine, time_chunking=False
             )
@@ -531,7 +531,7 @@ class TestMakeAncestorsTs:
         samples = tsinfer.SampleData.from_tree_sequence(ts, use_sites_time=False)
         ancestors_ts = tsinfer.make_ancestors_ts(ts, remove_leaves=remove_leaves)
         tsinfer.check_ancestors_ts(ancestors_ts)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             final_ts = tsinfer.match_samples(samples, ancestors_ts, engine=engine)
         tsinfer.verify(samples, final_ts)
 
@@ -546,7 +546,7 @@ class TestMakeAncestorsTs:
         inferred = tsinfer.infer(samples)
         ancestors_ts = tsinfer.make_ancestors_ts(inferred, remove_leaves=remove_leaves)
         tsinfer.check_ancestors_ts(ancestors_ts)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             final_ts = tsinfer.match_samples(samples, ancestors_ts, engine=engine)
         tsinfer.verify(samples, final_ts)
 

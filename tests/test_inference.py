@@ -206,6 +206,7 @@ class TestRoundTrip:
             ancestral_alleles,
         )
         test_params = [
+            {"engine": tsinfer.NUMBA_ENGINE},
             {"engine": tsinfer.PY_ENGINE},
             {"engine": tsinfer.C_ENGINE},
             {"simplify": True},
@@ -442,7 +443,7 @@ class TestAugmentedAncestorsRoundTrip(TestRoundTrip):
         )
         ancestors = tsinfer.generate_ancestors(sample_data)
         ancestors_ts = tsinfer.match_ancestors(sample_data, ancestors)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             augmented_ts = tsinfer.augment_ancestors(
                 sample_data,
                 ancestors_ts,
@@ -1710,7 +1711,7 @@ class TestGeneratedAncestors:
             A[start[j] : end[j], j] = ancestors[start[j] : end[j], j, 0]
             assert np.all(ancestors[0 : start[j], j, 0] == tskit.MISSING_DATA)
             assert np.all(ancestors[end[j] :, j, 0] == tskit.MISSING_DATA)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ancestors_ts = tsinfer.match_ancestors(
                 sample_data, ancestor_data, engine=engine
             )
@@ -4132,7 +4133,7 @@ class TestMismatchAndRecombination:
         num_loci = anc.num_sites
         r = np.full(num_loci - 1, 0.01)
         m = np.full(num_loci, 1)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             with pytest.raises(_tsinfer.MatchImpossible):
                 tsinfer.match_ancestors(
                     sd,
@@ -4147,7 +4148,7 @@ class TestMismatchAndRecombination:
         num_loci = anc.num_sites
         r = np.full(num_loci - 1, 0)
         m = np.full(num_loci, 0)
-        for engine in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for engine in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             with pytest.raises(_tsinfer.MatchImpossible):
                 tsinfer.match_ancestors(
                     sd,
@@ -4166,13 +4167,13 @@ class TestMismatchAndRecombination:
         num_loci = anc.num_sites
         r = np.full(num_loci - 1, 0.01)
         m = np.full(num_loci, 1)
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             anc_ts = tsinfer.match_ancestors(sd, anc, engine=e)
             tsinfer.match_samples(sd, anc_ts, recombination=r, mismatch=m, engine=e)
 
     def test_extreme_parameters(self, small_sd_anc_fixture):
         sd, anc = small_sd_anc_fixture
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             tsinfer.match_ancestors(sd, anc, recombination_rate=1e20, engine=e)
             tsinfer.match_ancestors(
                 sd, anc, recombination_rate=1, mismatch_ratio=1e20, engine=e
@@ -4272,7 +4273,7 @@ class TestMismatchAndRecombination:
         # fail to find a match.
         m = np.full(anc.num_sites, 1e-2)
         r = np.full(anc.num_sites - 1, 0)  # Ban recombination
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             anc_ts = tsinfer.match_ancestors(
                 sd,
                 anc,
@@ -4386,7 +4387,7 @@ class TestMissingDataImputed:
         with tsinfer.SampleData() as sample_data:
             for row in range(sites_by_samples.shape[0]):
                 sample_data.add_site(row, sites_by_samples[row, :])
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts = tsinfer.infer(sample_data, engine=e)
             assert ts.num_trees == 2
             assert np.all(expected == ts.genotype_matrix())
@@ -4407,7 +4408,7 @@ class TestMissingDataImputed:
         with tsinfer.SampleData() as sample_data:
             for row in range(sites_by_samples.shape[0]):
                 sample_data.add_site(row, sites_by_samples[row, :])
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts = tsinfer.infer(sample_data, engine=e)
             assert ts.num_trees == 2
             assert np.all(expected == ts.genotype_matrix())
@@ -4428,7 +4429,7 @@ class TestMissingDataImputed:
         with tsinfer.SampleData() as sample_data:
             for row in range(sites_by_samples.shape[0]):
                 sample_data.add_site(row, sites_by_samples[row, :])
-        for e in [tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
+        for e in [tsinfer.NUMBA_ENGINE, tsinfer.PY_ENGINE, tsinfer.C_ENGINE]:
             ts = tsinfer.infer(sample_data, engine=e)
             assert ts.num_trees == 1
             assert np.all(expected == ts.genotype_matrix())
