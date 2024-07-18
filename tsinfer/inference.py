@@ -1515,10 +1515,14 @@ class AncestorsGenerator:
         if self.engine == constants.NUMBA_ENGINE:
             logger.info(self.ancestor_builder.print_state(return_str=True))
 
-    def _run_synchronous(self, progress):
+    def _run_synchronous(self, progress, log_file = 'temp/anc_log.tsv'):
         a = np.zeros(self.num_sites, dtype=np.int8)
-        for t, focal_sites in self.descriptors:
-            before = time_.perf_counter()
+        if not os.path.exists(log_file):
+            print('test')
+            with open(log_file, 'w') as log:
+                log.write("index\tduration\tnum_sites\tnum_samples\tengine\n")
+        for index, (t, focal_sites) in enumerate(self.descriptors):
+            before = time.perf_counter()
             start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
             duration = time_.perf_counter() - before
             logger.debug(
@@ -1541,6 +1545,17 @@ class AncestorsGenerator:
                 haplotype=a[start:end],
             )
             progress.update()
+            if (index + 1) % 10 == 0:
+                with open(log_file, 'a') as log:
+                    log.write(
+                        "{}\t{}\t{}\t{}\t{}\n".format(
+                            index,
+                            duration,
+                            self.num_sites,
+                            self.num_samples,
+                            self.engine,
+                        )
+                    )
 
     def _run_threaded(self, progress):
         # This works by pushing the ancestor descriptors onto the build_queue,
@@ -1717,7 +1732,7 @@ class Matcher:
     ):
         
         if engine == constants.NUMBA_ENGINE:
-            engine = constants.PY_ENGINE
+            engine = constants.C_ENGINE
         self.sample_data = sample_data
         self.num_threads = num_threads
         self.path_compression = path_compression
