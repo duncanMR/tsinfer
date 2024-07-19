@@ -41,11 +41,12 @@ class AncestorBuilderViz:
 
     def draw_matrix(self, dwg, focal_sites, ancestor, current_site=None):
         A_t = self.sample_data.sites_genotypes[:]
+        #Need to remove fixed sites
         fixed_sites = np.all(A_t == A_t[:, [0]], axis=1)
         A = (A_t[~fixed_sites]).T
         n, m = A.shape
-        print(f"n={n}, m={m}")
-
+        print(f"Drawing matrix with {n} samples and {m} sites")
+        print(f"Ancestor length = {len(ancestor)}")
         for site in focal_sites:
             dwg.add(
                 dwg.rect(
@@ -85,7 +86,9 @@ class AncestorBuilderViz:
     def draw(self, ancestor_id):
         anc = self.ancestor_data.ancestor(ancestor_id)
         focal_sites = anc.focal_sites
-        a = anc.full_haplotype
+        start = anc.start
+        end = anc.end
+        a = anc.full_haplotype[start:end]
 
         dwg = svgwrite.Drawing(size=(self.width, self.height), debug=True)
         self.draw_matrix(dwg, focal_sites, a)
@@ -198,7 +201,12 @@ def draw_ancestors(ts, width=800, height=600):
         for mutation in site.mutations[1:]:
             a = x_trans(site.position), y_trans(mutation.node)
             dwg.add(dwg.circle(center=a, r=1, fill="blue"))
-    return dwg.tostring()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as f:
+            f.write(dwg.tostring().encode('utf-8'))
+            temp_filename = f.name
+    display(SVG(filename=temp_filename))
+#    return dwg.tostring()
 
 
 class Visualiser:
