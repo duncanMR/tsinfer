@@ -187,13 +187,9 @@ class NumbaAncestorBuilder:
         self.genotype_store = genotype_store
 
     def get_site_genotypes_subset(self, site_id, sample_set):
-        start = site_id * self.num_samples
-        genotypes = np.zeros(len(sample_set), dtype=np.int8)
-        for j, u in enumerate(sample_set):
-            genotypes[j] = self.genotype_store[start + u]
         full_genotypes = self.get_site_genotypes(site_id)
-        assert np.array_equal(full_genotypes[sample_set], genotypes)
-        return genotypes 
+        genotypes = full_genotypes[sample_set]
+        return genotypes
     
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
@@ -220,69 +216,81 @@ class NumbaAncestorBuilder:
         focal_time = self.sites_time[focal_site]
         genotypes = self.get_site_genotypes(focal_site)
         sample_set = np.where(genotypes == 1)[0]
+        sample_set2 = sample_set.copy()
         assert len(sample_set) > 0
-        remove_buffer = []
+
         # Break when we've lost half of S
         min_sample_set_size = len(sample_set) // 2
         last_site = focal_site
+        remove_buffer = []  
+        disagree = np.full(self.num_samples, False)
         #print(f"\tFocal: {focal_site}; time: {focal_time}; num_sites: {len(sites)}")
         for site_index in sites:
             a[site_index] = 0
             last_site = site_index
             if self.sites_time[site_index] > focal_time:
-                genotypes = self.get_site_genotypes_subset(site_index, sample_set)
-                fones = np.sum(genotypes == 1)
-                fzeros = np.sum(genotypes == 0)
+                genotypes = self.get_site_genotypes_subset(site_index, sample_set2)
+                ones = np.sum(genotypes == 1)
+                zeros = np.sum(genotypes == 0)
                
-                g_l = self.get_site_genotypes(site_index)    
-                ones = count_alleles_at_site(1, g_l, sample_set)
-                zeros = count_alleles_at_site(0, g_l, sample_set)
+                full_genotypes = self.get_site_genotypes(site_index)
+                ones2 = count_alleles_at_site(1, full_genotypes, sample_set2)
+                zeros2 = count_alleles_at_site(0, full_genotypes, sample_set2)
+                assert np.array_equal(full_genotypes[sample_set], genotypes)
+                assert zeros == zeros                
+                assert ones == ones2
 
-                disagree_samples = list(np.where(disagree)[0])
+                #disagree_samples = list(np.where(disagree)[0])
                 # assert np.array_equal(disagree_samples, remove_buffer)
-                # assert np.array_equal(g_l[S], genotypes)
                 if ones + zeros == 0:
                     #print(f"\t\tMissing data at site {site_index}")
                     a[site_index] = -1
                 else:
-                    
+                    disagree_samples = list(np.where(disagree)[0])
+                    assert np.array_equal(disagree_samples, remove_buffer)
                     #assert np.array_equal(g_l[S], genotypes)
                     consensus = 1 if ones >= zeros else 0
                     #print(f"\t\tSite: {site_index}; Ones: {ones}; Zeros:{zeros} ⇒ Consensus: {consensus}")
-                    for i, u in enumerate(sample_set):
-                        if (genotypes[i] != consensus) & (genotypes[i] != -1) & disagree[u]:
-                            #print(f"\t\t\tRemoving sample {u} from S")
-                            sample_set = sample_set[sample_set != u]
-                    for u in remove_buffer:
-                        if g_l[u] != consensus and g_l[u] != -1:
-                            #print(f"\t\t\tRemoving sample {u} from S")
-                            sample_set = sample_set[sample_set != u]
-
-                    a[site_index] = consensus
                     
-                    if len(sample_set) <= min_sample_set_size:
+                    for i, u in enumerate(sample_set):
+                        if (genotypes[i] != consensus) and (genotypes[i] != -1) and disagree[u]:
+                            #print(f"\t\t\tRemoving sample {u} from S")
+                            sample_set = sample_set[sample_set != u]
+                    
+                    for u in remove_buffer:
+                        if full_genotypes[u] != consensus and full_genotypes[u] != -1:
+                            #print(f"\t\t\tRemoving sample {u} from S")
+                            sample_set2 = sample_set2[sample_set2 != u]
+                    
+                    assert np.array_equal(sample_set, sample_set2)
+                    assert len(full_genotypes[sample_set]) == len(genotypes)
+                    a[site_index] = consensus
+
+                    for i, u in enumerate(sample_set):
+                        disagree[u] = (genotypes[i] != consensus) and (genotypes[i] != -1)
+
+                    if len(sample_set2) <= min_sample_set_size:
                         #print(f"\t\t\tStopping because S is too small (n = {min_sample_set_size})")
                         break
-                    #for i, u in enumerate(sample_set):
-                    #    disagree[u] = (genotypes[i] != consensus) & (genotypes[i] != -1)
                     remove_buffer.clear()
-                    for i,u in enumerate(sample_set):
-                        if g_l[u] != consensus and g_l[u] != -1:
+                    
+                    for i,u in enumerate(sample_set2):
+                        if full_genotypes[u] != consensus and full_genotypes[u] != -1:
                             #print(f"\t\t\t Genotype: {g_l[u]} != {consensus}")
                             #print(f"\t\t\tAdding sample {u} to remove buffer")
                             remove_buffer.append(u)
 
-                    # assert np.array_equal(S, sample_set)
-                    # if not np.array_equal(g_l[S], genotypes):
-                    #     print_array(S, 'S')
-                    #     print_array(sample_set, 'sample_set')
-                    #     print_array(g_l[S], 'g_l')
-                    #     print_array(genotypes, 'genotypes')
-                    # disagree_samples = list(np.where(disagree)[0])
-                    # if not np.array_equal(disagree_samples, remove_buffer):
-                    #     print_array(disagree_samples, 'disagree')
-                    #     print_array(remove_buffer, 'remove_buffer')
-                    #     raise ValueError("Disagree and remove buffer are not equal")
+                    assert np.array_equal(sample_set, sample_set2)
+                    assert len(full_genotypes[sample_set]) == len(genotypes)
+                    #assert np.array_equal(full_genotypes[sample_set], genotypes)
+                    disagree_samples = list(np.where(disagree)[0])
+                    if not np.array_equal(disagree_samples, remove_buffer):
+                        print('test')
+                        assert np.array_equal(sample_set, sample_set2)
+                        print(len(full_genotypes[sample_set]), len(genotypes))
+                        print_array(disagree_samples, 'disagree')
+                        print_array(remove_buffer, 'remove_buffer')
+                        #raise ValueError("Disagree and remove buffer are not equal")
 
                     
         assert a[last_site] != -1
