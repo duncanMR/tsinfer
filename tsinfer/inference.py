@@ -399,6 +399,8 @@ def generate_ancestors(
     engine=constants.C_ENGINE,
     progress_monitor=None,
     record_provenance=True,
+    log_path=None,
+    num_skipped=10,
     **kwargs,
 ):
     """
@@ -486,6 +488,8 @@ def generate_ancestors(
         genotype_encoding=genotype_encoding,
         mmap_temp_dir=mmap_temp_dir,
         progress_monitor=progress_monitor,
+        log_path=log_path,
+        num_skipped=num_skipped,
         )
     generator.add_sites(exclude_positions)
     ancestor_data = generator.run()
@@ -1397,11 +1401,15 @@ class AncestorsGenerator:
         sample_data,
         ancestor_data_path,
         ancestor_data_kwargs,
+        log_path=None,
+        num_skipped=None,
         num_threads=0,
         engine=constants.C_ENGINE,
         genotype_encoding=constants.GenotypeEncoding.EIGHT_BIT,
         mmap_temp_dir=None,
         progress_monitor=None,
+        
+
     ):
         self.sample_data = sample_data
         self.ancestor_data_path = ancestor_data_path
@@ -1416,6 +1424,8 @@ class AncestorsGenerator:
         self.num_threads = num_threads
         self.mmap_temp_file = None
         self.engine = engine
+        self.log_path = log_path
+        self.num_skipped = num_skipped
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1470,6 +1480,7 @@ class AncestorsGenerator:
         of samples with the derived allele divided by the total number of samples
         with non-missing alleles).
         """
+        
         if exclude_positions is None:
             exclude_positions = set()
         else:
@@ -1515,12 +1526,27 @@ class AncestorsGenerator:
         if self.engine == constants.NUMBA_ENGINE:
             logger.info(self.ancestor_builder.print_state(return_str=True))
 
-    def _run_synchronous(self, progress, log_file = 'temp/anc_log.tsv'):
+    def _run_synchronous(self, progress):
         a = np.zeros(self.num_sites, dtype=np.int8)
-        if not os.path.exists(log_file):
-            print('test')
-            with open(log_file, 'w') as log:
-                log.write("index\tduration\tnum_sites\tnum_samples\tengine\n")
+        log_path = self.log_path
+        num_skipped = self.num_skipped
+        if log_path is not None:
+            if not os.path.exists(log_path):
+                with open(log_path, 'w') as log:
+                    log.write(
+                        '\t'.join(map(str, [
+                            'index',
+                            'duration',
+                            'start',
+                            'end',
+                            'span',
+                            'time',
+                            'num_focal_sites',
+                            'num_sites',
+                            'num_samples',
+                            'engine',
+                        ])) + '\n'
+                    )
         for index, (t, focal_sites) in enumerate(self.descriptors):
             before = time.perf_counter()
             start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
@@ -1545,17 +1571,23 @@ class AncestorsGenerator:
                 haplotype=a[start:end],
             )
             progress.update()
-            if (index + 1) % 10 == 0:
-                with open(log_file, 'a') as log:
-                    log.write(
-                        "{}\t{}\t{}\t{}\t{}\n".format(
-                            index,
-                            duration,
-                            self.num_sites,
-                            self.num_samples,
-                            self.engine,
+            if log_path is not None:
+                if (index + num_skipped - 1) % num_skipped == 0:
+                    with open(log_path, 'a') as log:
+                        log.write(
+                            '\t'.join(map(str, [
+                                index,
+                                duration,
+                                start,
+                                end,
+                                end - start,
+                                t,
+                                len(focal_sites),
+                                self.num_sites,
+                                self.num_samples,
+                                self.engine,
+                            ])) + '\n'
                         )
-                    )
 
     def _run_threaded(self, progress):
         # This works by pushing the ancestor descriptors onto the build_queue,
