@@ -26,6 +26,8 @@ import numpy as np
 C_ENGINE = "C"
 PY_ENGINE = "P"
 NUMBA_ENGINE = "N"
+NUMBA_ALT_ENGINE = "N2"
+
 
 
 # TODO Change these to use the enum.IntFlag class

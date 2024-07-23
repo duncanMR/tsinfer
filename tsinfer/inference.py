@@ -1460,6 +1460,15 @@ class AncestorsGenerator:
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
+                method='primary',
+            )
+        elif engine == constants.NUMBA_ALT_ENGINE:
+            logger.debug("Using alternative Numba AncestorBuilder implementation")
+            self.ancestor_builder = ancestors.AncestorBuilder(
+                self.num_samples,
+                self.max_sites,
+                genotype_encoding=genotype_encoding,
+                method='alternative',
             )
         else:
             raise ValueError(f"Unknown engine:{engine}")
@@ -1535,7 +1544,7 @@ class AncestorsGenerator:
                 with open(log_path, 'w') as log:
                     log.write(
                         '\t'.join(map(str, [
-                            'index',
+                            'anc_index',
                             'duration',
                             'start',
                             'end',
