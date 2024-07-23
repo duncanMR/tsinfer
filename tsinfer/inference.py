@@ -1557,7 +1557,7 @@ class AncestorsGenerator:
                         ])) + '\n'
                     )
         for index, (t, focal_sites) in enumerate(self.descriptors):
-            before = time.perf_counter()
+            before = time_.perf_counter()
             start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
             duration = time_.perf_counter() - before
             logger.debug(
