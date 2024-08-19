@@ -56,10 +56,10 @@ class Site:
     time = attr.ib()
 
 @njit
-def count_alleles_at_site(allele, g_l, S):
+def count_alleles_at_site(allele, genotypes, sample_set):
     count = 0
-    for u in S:
-        if g_l[u] == allele:
+    for u in sample_set:
+        if genotypes[u] == allele:
             count += 1
     return count
 
@@ -93,138 +93,8 @@ class NumbaAncestorBuilder:
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
         stop = start + self.num_samples
-        g = self.genotype_store[start:stop]
-        return g
-
-    def compute_ancestral_states(self, a, focal_sites, direction):
-        """
-        For a given focal site, and set of sites to fill in (usually all the ones
-        leftwards or rightwards), augment the haplotype array a with the inferred sites
-        Together with `make_ancestor`, which calls this function, these describe the main
-        algorithm as implemented in Fig S2 of the preprint, with the buffer.
-
-        At the moment we assume that the derived state is 1. We should alter this so
-        that we allow the derived state to be a different non-zero integer.
-        """
-        if direction == 1:
-            focal_site = focal_sites[-1]
-            sites = np.arange(focal_site + 1, self.num_sites)
-        else:
-            focal_site = focal_sites[0]
-            sites = np.arange(focal_site - 1, -1, -1)
-        focal_time = self.sites_time[focal_site]
-        genotypes = self.get_site_genotypes(focal_site)
-        sample_set = np.where(genotypes == 1)[0]
-        assert len(sample_set) > 0
-
-        # Break when we've lost half of S
-        min_sample_set_size = len(sample_set) // 2
-        last_site = focal_site
-        remove_buffer = []  
-        
-        #print(f"\tFocal: {focal_site}; time: {focal_time}; num_sites: {len(sites)}")
-        for site_index in sites:
-            a[site_index] = 0
-            last_site = site_index
-            if self.sites_time[site_index] > focal_time:
-                full_genotypes = self.get_site_genotypes(site_index)
-                ones = count_alleles_at_site(1, full_genotypes, sample_set)
-                zeros = count_alleles_at_site(0, full_genotypes, sample_set)
-
-                if ones + zeros == 0:
-                    #print(f"\t\tMissing data at site {site_index}")
-                    a[site_index] = -1
-                else:
-                    consensus = 1 if ones >= zeros else 0
-                    #print(f"\t\tSite: {site_index}; Ones: {ones}; Zeros:{zeros} ⇒ Consensus: {consensus}")
-
-                    for u in remove_buffer:
-                        if full_genotypes[u] != consensus and full_genotypes[u] != -1:
-                            #print(f"\t\t\tRemoving sample {u} from S")
-                            sample_set = sample_set[sample_set != u]
-                    a[site_index] = consensus
-
-                    if len(sample_set) <= min_sample_set_size:
-                        #print(f"\t\t\tStopping because S is too small (n = {min_sample_set_size})")
-                        break
-                    remove_buffer.clear()
-                    
-                    for u in sample_set:
-                        if full_genotypes[u] != consensus and full_genotypes[u] != -1:
-                            #print(f"\t\t\tAdding sample {u} to remove buffer")
-                            remove_buffer.append(u)
-                    
-        assert a[last_site] != -1
-        return last_site
-    
-    def compute_between_focal_sites(self, a, focal_sites, sample_set):
-        focal_time = self.sites_time[focal_sites[0]]
-        # Interpolate ancestral haplotype within focal region (i.e. region
-        #  spanning from leftmost to rightmost focal site)
-        for j in np.arange(len(focal_sites) - 1):
-            # Interpolate region between focal site j and focal site j+1
-            for site_index in np.arange(focal_sites[j] + 1, focal_sites[j + 1]):
-                a[site_index] = 0
-                if self.sites_time[site_index] > focal_time:
-                    genotypes = self.get_site_genotypes_subset(site_index, sample_set)
-                    ones = np.sum(genotypes == 1)
-                    zeros = np.sum(genotypes == 0)
-                    #print(f"\t{site_index}\t{ones}\t{zeros}")
-                    if ones + zeros == 0:
-                        a[site_index] = -1
-                    elif ones >= zeros:
-                        a[site_index] = 1
-    
-    def make_ancestor(self, a, focal_sites):
-        """
-        Fills out the array a with the haplotype
-        return the start and end of an ancestor
-        """
-
-        focal_site = focal_sites[0]
-        a[:] = -1
-        for site in focal_sites:
-            a[site] = 1
-        genotypes = self.get_site_genotypes(focal_site)
-        sample_set = np.where(genotypes == 1)[0]
-        #print(f"S = {sample_set}, Genotype: {genotypes}")
-        if len(sample_set) == 0:
-            raise ValueError("Cannot compute ancestor for a site at freq 0")
-        
-        self.compute_between_focal_sites(a, focal_sites, sample_set)
-        #print("Extending rightwards from rightmost focal site")
-        last_site = self.compute_ancestral_states(a, focal_sites, +1)
-        end = last_site + 1
-        #print("Extending leftwards from leftmost focal site")
-        last_site = self.compute_ancestral_states(a, focal_sites, -1)
-        start = last_site
-        return start, end
-
-spec = [
-    ("num_samples", int32),
-    ("num_sites", int32),
-    ("sites_time", float64[:]),
-    ("genotype_store", int8[:]),
-    ]
-
-@jitclass(spec)
-class NumbaAltAncestorBuilder:
-    def __init__(self, sites_time, num_samples, genotype_store):
-        self.sites_time = sites_time
-        self.num_samples = num_samples
-        self.num_sites = len(sites_time)
-        self.genotype_store = genotype_store
-
-    def get_site_genotypes_subset(self, site_id, sample_set):
-        full_genotypes = self.get_site_genotypes(site_id)
-        genotypes = full_genotypes[sample_set]
+        genotypes = self.genotype_store[start:stop]
         return genotypes
-    
-    def get_site_genotypes(self, site_id):
-        start = site_id * self.num_samples
-        stop = start + self.num_samples
-        g = self.genotype_store[start:stop]
-        return g
 
     def compute_ancestral_states(self, a, focal_sites, direction):
         """
@@ -329,10 +199,109 @@ class NumbaAltAncestorBuilder:
         last_site = self.compute_ancestral_states(a, focal_sites, -1)
         start = last_site
         return start, end
-    
+                   
 
 
-                    
+
+@njit
+def compute_ancestral_states_numba(a, focal_site, sites, sites_time, g_mat):
+    """
+    For a given focal site, and set of sites to fill in (usually all the ones
+    leftwards or rightwards), augment the haplotype array a with the inferred sites
+    Together with `make_ancestor`, which calls this function, these describe the main
+    algorithm as implemented in Fig S2 of the preprint, with the buffer.
+
+    At the moment we assume that the derived state is 1. We should alter this so
+    that we allow the derived state to be a different non-zero integer.
+    """
+    focal_time = sites_time[focal_site]
+    g = g_mat[focal_site]
+    S = np.where(g == 1)[0]
+
+    # Break when we've lost half of S
+    min_sample_set_size = len(S) // 2
+    remove_buffer = []
+    last_site = focal_site
+    #print(f"\tFocal: {focal_site}; time: {focal_time}; num_sites: {len(sites)}")
+    for site_index in sites:
+        a[site_index] = 0
+        last_site = site_index
+        if sites_time[site_index] > focal_time:
+            g_l = g_mat[site_index]
+            ones = 0
+            zeros = 0
+            ones = count_alleles_at_site(1, g_l, S)
+            zeros = count_alleles_at_site(0, g_l, S)
+            if ones + zeros == 0:
+                #print(f"\t\tMissing data at site {site_index}")
+                a[site_index] = tskit.MISSING_DATA
+            else:
+                consensus = 1 if ones >= zeros else 0
+                #print(f"\t\tSite: {site_index}; Ones: {ones}; Zeros:{zeros} ⇒ Consensus: {consensus}")
+                for u in remove_buffer:
+                    if g_l[u] != consensus and g_l[u] != tskit.MISSING_DATA:
+                        #print(f"\t\t\tRemoving sample {u} from S")
+                        S = S[S != u]
+                a[site_index] = consensus
+                if len(S) <= min_sample_set_size:
+                    #print(f"\t\t\tStopping because S is too small (n = {min_sample_set_size})")
+                    break
+                remove_buffer.clear()
+                for u in S:
+                    if g_l[u] != consensus and g_l[u] != tskit.MISSING_DATA:
+                        #print(f"\t\t\t Genotype: {g_l[u]} != {consensus}")
+                        #print(f"\t\t\tAdding sample {u} to remove buffer")
+                        remove_buffer.append(u)
+    assert a[last_site] != tskit.MISSING_DATA
+    return last_site
+
+@njit
+def make_ancestor_numba(focal_sites, a, sites_time, g_mat):
+    """
+    Fills out the array a with the haplotype
+    return the start and end of an ancestor
+    """
+    num_sites = len(sites_time)
+    focal_site = focal_sites[0]
+    focal_time = sites_time[focal_site]
+    a[:] = tskit.MISSING_DATA
+    for site in focal_sites:
+        a[site] = 1
+    g = g_mat[focal_site]
+    S = np.where(g == 1)[0]
+    #print(f"S = {S}, Genotype: {g}")
+    if len(S) == 0:
+        raise ValueError("Cannot compute ancestor for a site at freq 0")
+
+    # Interpolate ancestral haplotype within focal region (i.e. region
+    #  spanning from leftmost to rightmost focal site)
+    for j in np.arange(len(focal_sites) - 1):
+        # Interpolate region between focal site j and focal site j+1
+        for site_index in np.arange(focal_sites[j] + 1, focal_sites[j + 1]):
+            a[site_index] = 0
+            if sites_time[site_index] > focal_time:
+                g_l = g_mat[site_index]
+                ones = count_alleles_at_site(1, g_l, S)
+                zeros = count_alleles_at_site(0, g_l, S)
+                #print(f"\t{site_index}\t{ones}\t{zeros}")
+                if ones + zeros == 0:
+                    a[site_index] = tskit.MISSING_DATA
+                elif ones >= zeros:
+                    a[site_index] = 1
+    # Extend ancestral haplotype rightwards from rightmost focal site
+    #print("Extending rightwards")
+    focal_site = focal_sites[-1]
+    sites = np.arange(focal_site + 1, num_sites)
+    last_site = compute_ancestral_states_numba(a, focal_site, sites, sites_time, g_mat)
+    end = last_site + 1
+    # Extend ancestral haplotype leftwards from leftmost focal site
+    #print("Extending leftwards")
+    focal_site = focal_sites[0]
+    sites = np.arange(focal_site - 1, -1, -1)
+    last_site = compute_ancestral_states_numba(a, focal_site, sites, sites_time, g_mat)
+    start = last_site
+    #print(f"Final ancestor: {a} (start: {start}; end: {end})")
+    return start, end
                     
 class AncestorBuilder:
     """
@@ -414,10 +383,9 @@ class AncestorBuilder:
         self.genotype_store[start:stop] = genotypes
 
     def get_genotypes_mat(self):
-        num_sites = self.num_sites
-        g_mat = np.zeros((num_sites, self.num_samples), dtype=np.int8)
-        for site_id in range(num_sites):
-            g_mat[site_id, :] = self.get_site_genotypes(site_id)
+        g_mat = self.genotype_store[:(self.num_sites*self.num_samples)].reshape(
+            self.num_sites, self.num_samples
+        )
         return g_mat
 
     def add_site(self, time, genotypes):
@@ -497,24 +465,24 @@ class AncestorBuilder:
         Fills out the array a with the haplotype
         return the start and end of an ancestor
         """
-
-        num_entries = self.num_sites*self.num_samples
-        genotype_store = self.genotype_store[:num_entries]
+        genotype_store = self.genotype_store.view()
         sites_time = self.sites_time[:self.num_sites]
         
-        if self.builder is None:
-            if self.method == 'primary':
+        if self.method == 'primary':
+            genotype_store = self.genotype_store.copy()
+            if self.builder is None:
                 self.builder = NumbaAncestorBuilder(
                     sites_time, self.num_samples, genotype_store
                 )
-            elif self.method == 'alternative':
-                self.builder = NumbaAltAncestorBuilder(
-                    sites_time, self.num_samples, genotype_store
-                )
-            else:
-                raise ValueError(f"Unknown method {self.method}")
+            return self.builder.make_ancestor(a, focal_sites)
+        elif self.method == 'alternative':
+            flat = self.genotype_store[:(self.num_sites*self.num_samples)]
+            genotypes = flat.reshape(self.num_sites, self.num_samples)
+            return make_ancestor_numba(focal_sites, a, sites_time, genotypes)
+        else:
+            raise ValueError(f"Unknown method {self.method}")
         
-        return self.builder.make_ancestor(a, focal_sites)
+        
 
 
  
