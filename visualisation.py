@@ -50,6 +50,7 @@ def compare_methods(
     log_name=None,
     num_skipped=10,
     engines=["C", "NUMBA"],
+    engine_labels=None,
 ):
     if log_name is None:
         log_name = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_log"
@@ -73,7 +74,7 @@ def compare_methods(
 
         for n, name in enumerate(engines):
             engine = getattr(tsinfer, name + "_ENGINE")
-            engine_label_map[engine] = name
+            engine_label_map[engine] = name if engine_labels is None else engine_labels[n]
             ancestors = tsinfer.generate_ancestors(
                 sample_data,
                 engine=engine,
@@ -83,14 +84,14 @@ def compare_methods(
             if n == 0:
                 c_ancestors = ancestors
             if not c_ancestors.data_equal(ancestors):
-                print(f"ERR: Ancestor arrays of {name} and C engine differ")
+                print(f"Error: Ancestor arrays of {name} and C engine differ")
 
     df = pd.read_csv(log_path, sep="\t")
     df = df[df.anc_index != 0]
     df["engine"] = df["engine"].map(engine_label_map)
     return df
 
-def plot_duration_by_index(num_samples, df, ax):
+def plot_duration_by_index(num_samples, df, ax, alpha=1):
     subset_df = df[df.num_samples == num_samples]
     sns.lineplot(
         data=subset_df,
@@ -99,6 +100,7 @@ def plot_duration_by_index(num_samples, df, ax):
         hue="engine",
         palette="tab10",
         ax=ax,
+        alpha=alpha,
     ).set(
         xlabel="Ancestor index",
         ylabel="Duration (s)",
@@ -106,7 +108,7 @@ def plot_duration_by_index(num_samples, df, ax):
         yscale="log",
     )
 
-def plot_mean_duration(df, title=None):
+def plot_mean_duration(df, title=None, alpha=1):
     fig, axs = plt.subplots(3, 2, figsize=(12, 12))
 
     sns.barplot(
@@ -131,7 +133,7 @@ def plot_mean_duration(df, title=None):
     axs_indices = [(0, 1), (1, 0), (1, 1)]
     for axs_index, num_samples in zip(axs_indices, num_samples_list):
         ax = axs[axs_index]
-        plot_duration_by_index(num_samples, df, ax)
+        plot_duration_by_index(num_samples, df, ax, alpha=alpha)
 
     g_df = df.groupby(["num_samples", "engine"]).sum("duration").reset_index()
     c_duration = g_df[g_df["engine"] == "C"][["num_samples", "duration"]].set_index(
@@ -167,6 +169,7 @@ def plot_mean_duration(df, title=None):
         hue="num_samples",
         palette="Dark2",
         ax=axs[2, 1],
+        alpha=alpha,
     ).set(
         xlabel="Ancestor index",
         ylabel="Ancestor span",
