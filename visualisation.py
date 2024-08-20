@@ -14,8 +14,170 @@ from IPython.display import SVG, display
 import tempfile
 import svgwrite
 import tskit
-
+import matplotlib.pyplot as plt
+import numpy as np
+import datetime
+import pandas as pd
+import seaborn as sns
+from tqdm import tqdm
+import os
 import tsinfer
+
+def compare_ancestors(ancestor_dict):
+    assert len(ancestor_dict) == 2
+    offsets = [0, 2e-3]
+    colors = ["red", "blue"]
+    fig, ax = plt.subplots(figsize=(15, 15))
+    for index, (type, ancestor_data) in enumerate(ancestor_dict.items()):
+        anc_time = ancestor_data.ancestors_time[:] + offsets[index]
+        start = ancestor_data.ancestors_start[:]
+        end = ancestor_data.ancestors_end[:]
+
+        ax.hlines(y=anc_time, xmin=start, xmax=end, label=type, colors=colors[index])
+
+    ax.set_xlabel("Position")
+    ax.set_ylabel("Time (frequency)")
+    ax.legend(title="Method")
+    plt.show()
+
+def compare_methods(
+    pop_sizes,
+    seq_length,
+    recomb_rate,
+    mut_rate,
+    seed=2,
+    output_dir="temp/logs",
+    log_name=None,
+    num_skipped=10,
+    engines=["C", "NUMBA"],
+):
+    if log_name is None:
+        log_name = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_log"
+    os.makedirs(output_dir, exist_ok=True)
+    log_path = f"{output_dir}/{log_name}.tsv"
+    assert engines[0] == "C"
+    engine_label_map = {}
+
+    for n in tqdm(pop_sizes):
+        ts_raw = msprime.sim_ancestry(
+            n,
+            sequence_length=seq_length,
+            random_seed=seed,
+            recombination_rate=recomb_rate,
+        )
+        ts = msprime.sim_mutations(
+            ts_raw, rate=mut_rate, random_seed=seed, model="binary"
+        )
+
+        sample_data = tsinfer.SampleData.from_tree_sequence(ts)
+
+        for n, name in enumerate(engines):
+            engine = getattr(tsinfer, name + "_ENGINE")
+            engine_label_map[engine] = name
+            ancestors = tsinfer.generate_ancestors(
+                sample_data,
+                engine=engine,
+                log_path=log_path,
+                num_skipped=num_skipped,
+            )
+            if n == 0:
+                c_ancestors = ancestors
+            if not c_ancestors.data_equal(ancestors):
+                print(f"ERR: Ancestor arrays of {name} and C engine differ")
+
+    df = pd.read_csv(log_path, sep="\t")
+    df = df[df.anc_index != 0]
+    df["engine"] = df["engine"].map(engine_label_map)
+    return df
+
+def plot_duration_by_index(num_samples, df, ax):
+    subset_df = df[df.num_samples == num_samples]
+    sns.lineplot(
+        data=subset_df,
+        x="anc_index",
+        y="duration",
+        hue="engine",
+        palette="tab10",
+        ax=ax,
+    ).set(
+        xlabel="Ancestor index",
+        ylabel="Duration (s)",
+        title=f"Duration vs ancestor index in loop ({num_samples} samples)",
+        yscale="log",
+    )
+
+def plot_mean_duration(df, title=None):
+    fig, axs = plt.subplots(3, 2, figsize=(12, 12))
+
+    sns.barplot(
+        data=df,
+        x="num_samples",
+        y="duration",
+        hue="engine",
+        estimator=np.median,
+        errorbar=("pi", 90),
+        capsize=0.1,
+        palette="tab10",
+        saturation=1,
+        ax=axs[0, 0],
+    ).set(
+        xlabel="Number of sample nodes",
+        ylabel="Median duration (s)",
+        title="Median time taken per ancestor",
+        yscale="log",
+    )
+
+    num_samples_list = df["num_samples"].unique()
+    axs_indices = [(0, 1), (1, 0), (1, 1)]
+    for axs_index, num_samples in zip(axs_indices, num_samples_list):
+        ax = axs[axs_index]
+        plot_duration_by_index(num_samples, df, ax)
+
+    g_df = df.groupby(["num_samples", "engine"]).sum("duration").reset_index()
+    c_duration = g_df[g_df["engine"] == "C"][["num_samples", "duration"]].set_index(
+        "num_samples"
+    )
+
+    speedup_df = g_df[g_df["engine"] != "C"]
+    speedup_df["speedup"] = speedup_df.apply(
+        lambda row: row["duration"] / c_duration.loc[row["num_samples"], "duration"],
+        axis=1,
+    )
+    num_alts = len(speedup_df["engine"].unique())
+    palette = sns.color_palette("tab10")[1 : num_alts + 1]
+    # Plot speedup
+    sns.barplot(
+        data=speedup_df,
+        x="num_samples",
+        y="speedup",
+        hue="engine",
+        palette=palette,
+        saturation=1,
+        ax=axs[2, 0],
+    ).set(
+        xlabel="Number of sample nodes",
+        ylabel="Speedup",
+        title="Total speedup of C implementation from 2nd ancestor",
+    )
+
+    sns.lineplot(
+        data=df[df.engine == "C"],
+        x="anc_index",
+        y="span",
+        hue="num_samples",
+        palette="Dark2",
+        ax=axs[2, 1],
+    ).set(
+        xlabel="Ancestor index",
+        ylabel="Ancestor span",
+        title=f"Ancestor span by index",
+    )
+
+    # Adjust layout
+    plt.tight_layout()
+    if title is not None:
+        plt.suptitle(title)
+    plt.show()
 
 
 class AncestorBuilderViz:
