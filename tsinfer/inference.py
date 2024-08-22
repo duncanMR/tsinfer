@@ -401,6 +401,7 @@ def generate_ancestors(
     record_provenance=True,
     log_path=None,
     num_skipped=10,
+    iteration=None,
     **kwargs,
 ):
     """
@@ -490,6 +491,7 @@ def generate_ancestors(
         progress_monitor=progress_monitor,
         log_path=log_path,
         num_skipped=num_skipped,
+        iteration=iteration,
         )
     generator.add_sites(exclude_positions)
     ancestor_data = generator.run()
@@ -1403,6 +1405,7 @@ class AncestorsGenerator:
         ancestor_data_kwargs,
         log_path=None,
         num_skipped=None,
+        iteration=None,
         num_threads=0,
         engine=constants.C_ENGINE,
         genotype_encoding=constants.GenotypeEncoding.EIGHT_BIT,
@@ -1426,6 +1429,7 @@ class AncestorsGenerator:
         self.engine = engine
         self.log_path = log_path
         self.num_skipped = num_skipped
+        self.iteration = iteration
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1554,6 +1558,7 @@ class AncestorsGenerator:
                             'num_sites',
                             'num_samples',
                             'engine',
+                            'iteration',
                         ])) + '\n'
                     )
         for index, (t, focal_sites) in enumerate(self.descriptors):
@@ -1595,6 +1600,7 @@ class AncestorsGenerator:
                                 self.num_sites,
                                 self.num_samples,
                                 self.engine,
+                                self.iteration,
                             ])) + '\n'
                         )
 
