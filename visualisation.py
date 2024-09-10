@@ -25,6 +25,23 @@ import tsinfer
 sns.set_theme(style="whitegrid")
 pd.options.mode.chained_assignment = None
 
+def compare_ancestors(ancestor_dict):
+    assert len(ancestor_dict) == 2
+    offsets = [0, 2e-3]
+    colors = ["red", "blue"]
+    fig, ax = plt.subplots(figsize=(15, 15))
+    for index, (type, ancestor_data) in enumerate(ancestor_dict.items()):
+        anc_time = ancestor_data.ancestors_time[:] + offsets[index]
+        start = ancestor_data.ancestors_start[:]
+        end = ancestor_data.ancestors_end[:]
+
+        ax.hlines(y=anc_time, xmin=start, xmax=end, label=type, colors=colors[index])
+
+    ax.set_xlabel("Position")
+    ax.set_ylabel("Time (frequency)")
+    ax.legend(title="Method")
+    plt.show()
+
 def plot_perf_by_index(df, alpha=0.8, title_core=None):
     g = sns.FacetGrid(
         df,
@@ -152,6 +169,22 @@ def plot_perf_summary(output_dir, output_prefix, plot_path=None, title_core=None
 
     return df
 
+def compare_ancestors(ancestor_dict):
+    assert len(ancestor_dict) == 2
+    offsets = [0, 2e-3]
+    colors = ["red", "blue"]
+    fig, ax = plt.subplots(figsize=(15, 15))
+    for index, (type, ancestor_data) in enumerate(ancestor_dict.items()):
+        anc_time = ancestor_data.ancestors_time[:] + offsets[index]
+        start = ancestor_data.ancestors_start[:]
+        end = ancestor_data.ancestors_end[:]
+
+        ax.hlines(y=anc_time, xmin=start, xmax=end, label=type, colors=colors[index])
+
+    ax.set_xlabel("Position")
+    ax.set_ylabel("Time (frequency)")
+    ax.legend(title="Method")
+    plt.show()
 
 class AncestorBuilderViz:
     """

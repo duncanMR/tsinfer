@@ -206,6 +206,7 @@ def compare_true_vs_inferred_anc(
     true_left = {}
     true_right = {}
     inferred_node = {}
+    inferred_time = {}
     inferred_left = {}
     inferred_right = {}
     true_len = {}
@@ -283,6 +284,7 @@ def compare_true_vs_inferred_anc(
         true_len[focal_pos] = true_anc.ancestors_length[:][true_index]
         est_len[focal_pos] = inferred_anc.ancestors_length[:][inferred_index]
         true_time[focal_pos] = true_anc.ancestors_time[:][true_index]
+        inferred_time[focal_pos] = inferred_anc.ancestors_time[:][inferred_index]
         sites_freq = inferred_freq[olap_start_estim:olap_end_estim]
         higher_freq = sites_freq[small_inferred_mask] > freq[focal_pos]
         olap_n_should_be_1_higher_freq[focal_pos] = np.sum(should_be_1 & higher_freq)
@@ -324,11 +326,12 @@ def compare_true_vs_inferred_anc(
                 olap_n_should_be_0_low_eq_freq[p],
                 t,
                 true_time[p],
+                inferred_time[p],
             )
             for t, p in enumerate(sorted(shared_positions, key=lambda x: true_time[x]))
         ],
         columns=(
-            "focal_site_position",
+            "focal_site_pos",
             "focal_site_frequency",
             "num_overlapping_sites",
             "true_length",
@@ -348,6 +351,7 @@ def compare_true_vs_inferred_anc(
             "err_lowfreq_should_be_0",
             "true_time_order",
             "true_time",
+            "inferred_time",
         ),
     )
 
@@ -392,7 +396,7 @@ def compare_true_vs_inferred_anc(
     inferred_ts = tsinfer.match_samples(
         sample_data, ancestor_ts, num_threads=8, post_process=False
     )
-    simplified_ts = inferred_ts.simplify(filter_nodes=False)
+    simplified_ts = inferred_ts.simplify(filter_nodes=False, keep_unary=True)
     copied_left, copied_right = extract_copying_data(
         num_nodes=simplified_ts.num_nodes,
         edges_left=simplified_ts.edges_left,
@@ -403,15 +407,13 @@ def compare_true_vs_inferred_anc(
     # Inferred left starts at first site but edges start at 0
     copied_left = np.maximum(copied_left, df.inferred_left)
     copied_length = copied_right - copied_left
-    #assert np.all(copied_length >= 0)
-    nodes_time = simplified_ts.nodes_time[inferred_nodes]
+    assert np.all(copied_length >= 0)
     df["copied_left"] = copied_left
     df["copied_right"] = copied_right
     df["copied_length"] = copied_length
-    df['copied_length'] = df['copied_length'].fillna(0)
-    df["copied_length_ratio"] = copied_length / df.inferred_length
-    df['not_copied'] = df['copied_length'] == 0
-    df["inferred_node_time"] = nodes_time
+    df['copied_length'] = df['copied_length']
+    df["copied_length_ratio"] = df.copied_length / df.inferred_length
+    #df.drop_duplicates(subset=['true_node', 'inferred_node'], inplace=True)
 
     return df, simplified_ts
 
@@ -432,7 +434,6 @@ def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_
         if copied_right[p] < right:
             copied_right[p] = right
     
-    bad_ancestors = np.where(copied_right == 0)[0]
-    copied_right[bad_ancestors] = np.nan
-    copied_left[bad_ancestors] = np.nan
     return copied_left[node_subset], copied_right[node_subset]
+
+
