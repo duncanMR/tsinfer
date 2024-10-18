@@ -130,19 +130,20 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
             haplotype=a[s:e],
         )
 
-def generate_true_and_inferred_ancestors(ts, engine="C"):
+def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1):
     """
     Run a simulation under args and return the samples, plus the true and the inferred
     ancestors
     """
     sample_data = tsinfer.SampleData.from_tree_sequence(ts)
     inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine)
+    filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
     )
     build_simulated_ancestors(true_anc, ts)
     true_anc.finalise()
-    return sample_data, true_anc, inferred_anc
+    return sample_data, true_anc, filtered_anc
 
 
 def ancestor_data_by_pos(anc1, anc2):
@@ -351,7 +352,7 @@ def compare_true_vs_inferred_anc(
             "err_lowfreq_should_be_0",
             "true_time_order",
             "true_time",
-            "inferred_time",
+            "frequency",
         ),
     )
 
@@ -396,12 +397,12 @@ def compare_true_vs_inferred_anc(
     inferred_ts = tsinfer.match_samples(
         sample_data, ancestor_ts, num_threads=8, post_process=False
     )
-    simplified_ts = inferred_ts.simplify(filter_nodes=False, keep_unary=True)
+    ts = inferred_ts.simplify(filter_nodes=False, keep_unary=True)
     copied_left, copied_right = extract_copying_data(
-        num_nodes=simplified_ts.num_nodes,
-        edges_left=simplified_ts.edges_left,
-        edges_right=simplified_ts.edges_right,
-        edges_parent=simplified_ts.edges_parent,
+        num_nodes=ts.num_nodes,
+        edges_left=ts.edges_left,
+        edges_right=ts.edges_right,
+        edges_parent=ts.edges_parent,
         node_subset=inferred_nodes,
     )
     # Inferred left starts at first site but edges start at 0
@@ -415,12 +416,11 @@ def compare_true_vs_inferred_anc(
     df["copied_length_ratio"] = df.copied_length / df.inferred_length
     #df.drop_duplicates(subset=['true_node', 'inferred_node'], inplace=True)
 
-    return df, simplified_ts
+    return df, ts
 
 
 @numba.njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):
-    """Copied from tsqc repo"""
     num_edges = edges_left.shape[0]
     copied_left = np.zeros(num_nodes, dtype=np.float64) + np.inf
     copied_right = np.zeros(num_nodes, dtype=np.float64)
@@ -437,3 +437,87 @@ def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_
     return copied_left[node_subset], copied_right[node_subset]
 
 
+def make_ancestors_df(ancestor_data, ts):
+    
+    ts_sites_position = np.append(ts.sites_position, ts.sequence_length)
+    num_ancestors = ancestor_data.num_ancestors
+    ancestor_id = np.arange(num_ancestors)[2:]
+    anc_sites_position = ancestor_data.sites_position[:]
+    anc_sites_position = np.append(anc_sites_position, ts.sequence_length)
+    frequency = ancestor_data.ancestors_time[2:]
+    focal_sites_array = ancestor_data.ancestors_focal_sites[2:]
+    left_focal_pos = np.full(num_ancestors-2, -1)
+    right_focal_pos = np.full(num_ancestors-2, -1)
+    left_focal_site = np.full(num_ancestors-2, -1)
+    right_focal_site = np.full(num_ancestors-2, -1)
+    focal_site_str = np.full(num_ancestors-2, "").astype('object')
+    focal_pos_str = np.full(num_ancestors-2, "").astype('object')
+    for i, focal_sites in enumerate(focal_sites_array):
+        left_focal_site[i] = focal_sites[0]
+        left_focal_pos[i] = anc_sites_position[focal_sites[0]]
+        right_focal_site[i] = focal_sites[-1]
+        right_focal_pos[i] = anc_sites_position[focal_sites[-1]]
+        focal_pos_array = anc_sites_position[focal_sites]
+        focal_pos_str[i] = ",".join(map(str, focal_pos_array))
+        #we need to get the IDs of the sites in the TS not ancestor_data
+        focal_site_mapped = np.searchsorted(ts_sites_position, focal_pos_array)
+        focal_site_str[i] = ",".join(map(str, focal_site_mapped))
+
+    anc_start = ancestor_data.ancestors_start[2:]
+    anc_end = ancestor_data.ancestors_end[2:]
+    inferred_left_pos = anc_sites_position[anc_start]
+    inferred_right_pos = anc_sites_position[anc_end]
+    inferred_length_pos = inferred_right_pos - inferred_left_pos
+    assert np.all(inferred_length_pos >= 0)
+
+    copied_left_pos, copied_right_pos = extract_copying_data(
+        num_nodes=ts.num_nodes,
+        edges_left=ts.edges_left,
+        edges_right=ts.edges_right,
+        edges_parent=ts.edges_parent,
+        node_subset=ancestor_id,
+    )
+    assert(len(copied_left_pos) == num_ancestors-2)
+
+    # Edges starting at 0 actually started from 0th site
+    copied_left_pos[copied_left_pos == 0] = min(ts_sites_position) 
+    copied_length_pos = copied_right_pos - copied_left_pos
+
+    left_focal_site = np.searchsorted(ts_sites_position, left_focal_pos)
+    right_focal_site = np.searchsorted(ts_sites_position, right_focal_pos)
+    inferred_left_site = np.searchsorted(ts_sites_position, inferred_left_pos)
+    inferred_right_site = np.searchsorted(ts_sites_position, inferred_right_pos)
+    inferred_length_site = inferred_right_site - inferred_left_site
+    assert np.all(inferred_length_site >= 0)
+    copied_left_site = np.searchsorted(ts_sites_position, copied_left_pos)
+    copied_right_site = np.searchsorted(ts_sites_position, copied_right_pos)
+    copied_length_site = copied_right_site - copied_left_site
+    assert np.all(copied_length_site >= 0)
+    copied_length_ratio = copied_length_site / inferred_length_site
+
+    data = {
+        'ancestor_id': ancestor_id,
+        'frequency': frequency,
+        'left_focal_pos': left_focal_pos,
+        'right_focal_pos': right_focal_pos,
+        'focal_site_str': focal_site_str,
+        'focal_pos_str': focal_pos_str,
+        'inferred_left_pos': inferred_left_pos,
+        'inferred_right_pos': inferred_right_pos,
+        'inferred_length_pos': inferred_length_pos,
+        'copied_left_pos': copied_left_pos,
+        'copied_right_pos': copied_right_pos,
+        'copied_length_pos': copied_length_pos,
+        'left_focal_site': left_focal_site,
+        'right_focal_site': right_focal_site,
+        'inferred_left_site': inferred_left_site,
+        'inferred_right_site': inferred_right_site,
+        'inferred_length_site': inferred_length_site,
+        'copied_left_site': copied_left_site,
+        'copied_right_site': copied_right_site,
+        'copied_length_site': copied_length_site,
+        'copied_length_ratio': copied_length_ratio
+    }
+
+    ancestors_df = pd.DataFrame(data)
+    return ancestors_df

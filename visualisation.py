@@ -25,6 +25,40 @@ import tsinfer
 sns.set_theme(style="whitegrid")
 pd.options.mode.chained_assignment = None
 
+def plot_ancestor_boxplot(df, cutoffs, vars, var_labels, title, y_units="bp", y_log=False):
+    df['frequency_bin'] = pd.cut(df['frequency'], bins=cutoffs, include_lowest=True)
+    df['frequency_bin'] = df['frequency_bin'].apply(
+        lambda x: f"({x.left:.2f}, {x.right:.2f}]"
+    )
+    lengths_df = pd.melt(
+        df, 
+        id_vars=['frequency_bin'], 
+        value_vars=vars, 
+        var_name='type', 
+        value_name='value'
+    )
+
+    lengths_df['type'] = lengths_df['type'].map(dict(zip(vars, var_labels)))
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [4, 1]})
+
+    sns.boxplot(x='frequency_bin', y='value', hue='type', data=lengths_df, palette='tab10', saturation=1, hue_order=var_labels, ax=ax1)
+    ax1.legend(title='Ancestor type')
+    ax1.set_xlabel("Ancestor age interval (frequency)")
+    ax1.set_ylabel(f"Ancestor length ({y_units})")
+    ax1.set_title(title)
+    if y_log is True:
+        ax1.set_yscale('log')
+
+    quantile_counts = df['frequency_bin'].value_counts(sort=False)
+
+    sns.barplot(x=quantile_counts.index, y=quantile_counts.values, ax=ax2, color='#ced4da',linewidth=1, edgecolor="black")
+    ax2.set_ylabel("Count")
+    ax2.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+    ax2.set_xlabel("")
+    plt.tight_layout()
+    plt.show()
+
 def compare_ancestors(ancestor_dict):
     assert len(ancestor_dict) == 2
     offsets = [0, 2e-3]

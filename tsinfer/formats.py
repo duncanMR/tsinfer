@@ -2368,6 +2368,7 @@ class VariantData(SampleData):
         _, self._num_individuals_before_mask, self.ploidy = genotypes_arr.shape
 
         if site_mask is None:
+            print('test')
             site_mask = np.full(self.data["variant_position"].shape, False, dtype=bool)
         elif isinstance(site_mask, np.ndarray):
             pass
@@ -3509,6 +3510,56 @@ class AncestorData(DataContainer):
         assert np.array_equal(time, truncated.ancestors_time)
         assert np.array_equal(position, truncated.sites_position[:])
         return truncated
+
+    def filter_old_ancestors(self, max_frequency):
+        num_sites = self.num_sites
+        seq_length = self.sequence_length
+        pos = self.sites_position[:]
+        sites_to_remove = np.array([])
+        for anc in self.ancestors():
+            if anc.time > max_frequency:
+                sites_to_remove = np.concatenate([sites_to_remove, anc.focal_sites])
+            else:
+                break
+        sites_to_remove = np.sort(sites_to_remove)
+        site_mask = ~np.isin(np.arange(num_sites), sites_to_remove)
+        filtered_pos = pos[site_mask]
+        num_filtered_sites = len(filtered_pos)
+        filtered_anc = AncestorData(sequence_length=seq_length, position=filtered_pos)
+        index_map = np.full(num_sites, -1, dtype=int)
+        index_map[site_mask] = np.arange(len(filtered_pos))
+        index_map = np.append(index_map, num_filtered_sites) #for endpoints
+
+        for index, anc in enumerate(self.ancestors()):
+            if (index < 2 or anc.time <= max_frequency):
+                full_haplotype = anc.full_haplotype[site_mask]
+                focal_sites = index_map[anc.focal_sites]
+                assert np.all(focal_sites != -1)
+                start = index_map[anc.start]
+                end = index_map[anc.end]
+                if start == -1:
+                    start_pos = pos[anc.start]
+                    start = np.searchsorted(filtered_pos, start_pos)
+                    assert 0 <= start < num_filtered_sites
+                if end == -1:
+                    end_pos = pos[anc.end]
+                    end = np.searchsorted(filtered_pos, end_pos)
+                    assert 0 < end <= num_filtered_sites
+
+                haplotype = full_haplotype[start:end]
+                # print(f'Old start: {anc.start}; new start: {start}')
+                # print(f'Old end: {anc.end}; new end: {end}')
+                # print(f'Length of old haplotype {len(anc.haplotype)}')
+                # print(f'Length of new haplotype {len(haplotype)}')
+                filtered_anc.add_ancestor(
+                    start=start,
+                    end=end,
+                    time=anc.time,
+                    focal_sites=focal_sites,
+                    haplotype=haplotype,
+                )
+        filtered_anc.finalise()
+        return filtered_anc
 
     ####################################
     # Write mode (building and editing)
