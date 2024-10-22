@@ -35,6 +35,7 @@ import queue
 import tempfile
 import threading
 import time as time_
+import csv
 
 import humanize
 import numpy as np
@@ -520,6 +521,7 @@ def match_ancestors(
     extended_checks=False,
     time_units=None,
     record_provenance=True,
+    return_grouping=False,
 ):
     """
     match_ancestors(sample_data, ancestor_data, *, recombination_rate=None,\
@@ -577,6 +579,8 @@ def match_ancestors(
         progress_monitor=progress_monitor,
     )
     ancestor_grouping = matcher.group_by_linesweep()
+    if return_grouping is True:
+        return ancestor_grouping
     ts = matcher.match_ancestors(ancestor_grouping)
     tables = ts.dump_tables()
     for timestamp, record in ancestor_data.provenances():
