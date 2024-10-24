@@ -6,8 +6,145 @@ import tsinfer
 import tszip
 import stdpopsim
 import msprime
+import time as time_
+import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
 
+class TestMatchingPerformance:
+    def __init__(self, sample_data, freq_list=[0.8, 1], num_threads=24):
+        self.sample_data = sample_data
+        self.freq_list = freq_list
+        self.data_list = [] 
+        self.dataframe = pd.DataFrame()
+        self.inferred_ts = {}
+        self.num_threads = num_threads
+
+    def run_matching(self):
+        inferred_anc = tsinfer.generate_ancestors(self.sample_data, progress_monitor=True)
+        
+        for i, freq in enumerate(self.freq_list):
+            print(f'Inferring ARG with frequency cutoff {freq}')
+            filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=freq)
+
+            before_wall = time_.perf_counter()
+            before_cpu = time_.process_time()
+            ancestor_ts = tsinfer.match_ancestors(
+                self.sample_data, filtered_anc, progress_monitor=True, num_threads=self.num_threads)
+            ancestor_wall_time = time_.perf_counter() - before_wall
+            ancestor_cpu_time = time_.process_time() - before_cpu
+
+            before_wall = time_.perf_counter()
+            before_cpu = time_.process_time()
+            inferred_ts = tsinfer.match_samples(
+                self.sample_data, ancestor_ts, post_process=False, progress_monitor=True, num_threads=self.num_threads)
+            sample_wall_time = time_.perf_counter() - before_wall
+            sample_cpu_time = time_.process_time() - before_cpu
+            inferred_ts = tsinfer.post_process(inferred_ts)
+            self.inferred_ts[freq] = inferred_ts
+
+            ancestor_grouping = tsinfer.match_ancestors(
+                self.sample_data, filtered_anc, return_grouping=True)
+            ancestors_per_epoch = np.zeros(len(ancestor_grouping) + 1)
+            for index, ancestors in ancestor_grouping.items():
+                ancestors_per_epoch[index] = len(ancestors)
+            num_epochs = len(ancestors_per_epoch)
+
+            data_row = {
+                'frequency': freq,
+                'ancestor_match_walltime': ancestor_wall_time,
+                'sample_match_walltime': sample_wall_time,
+                'ancestor_match_cputime': ancestor_cpu_time,
+                'sample_match_cputime': sample_cpu_time,
+                'ancestors_per_epoch': str(ancestors_per_epoch.tolist()),
+                'num_epochs': num_epochs
+            }
+            self.data_list.append(data_row)
+
+        self.dataframe = pd.DataFrame(self.data_list)
+
+    def dump(self, output_folder, prefix):
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        csv_path = os.path.join(output_folder, f"{prefix}_wall_times.csv")
+        self.dataframe.to_csv(csv_path, index=False)
+
+        for freq, ts in self.inferred_ts.items():
+            formatted_freq = f"{freq:.1f}"
+            ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
+            tszip.compress(ts, ts_path)
+        print(f"Data saved to {output_folder} with prefix '{prefix}'")
+
+    def load(self, output_folder, prefix):
+        csv_path = os.path.join(output_folder, f"{prefix}_wall_times.csv")
+        self.dataframe = pd.read_csv(csv_path)
+        self.freq_list = self.dataframe['frequency'].tolist()
+
+        self.inferred_ts = {}
+        for freq in self.freq_list:
+            formatted_freq = f"{freq:.1f}"
+            print(f"Loading tree sequence for frequency {formatted_freq}")
+            ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
+            self.inferred_ts[freq] = tszip.decompress(ts_path)
+
+    def visualise(self):
+        freqs = self.dataframe['frequency'].tolist()
+        colors = plt.colormaps.get_cmap('tab10').colors[:len(freqs)]
+
+        fig = plt.figure(figsize=(15, 8))
+        gs = fig.add_gridspec(2, 4, height_ratios=[1, 2])
+
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.bar(range(len(freqs)), self.dataframe['ancestor_match_walltime'],
+                color=colors, width=0.35)
+        ax1.set_xlabel('Frequency cutoff')
+        ax1.set_ylabel('Wall time (seconds)')
+        ax1.set_title('Ancestor matching wall time')
+        ax1.set_xticks(range(len(freqs)))
+        ax1.set_xticklabels(freqs)
+
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.bar(range(len(freqs)), self.dataframe['sample_match_walltime'],
+                color=colors, width=0.35)
+        ax2.set_xlabel('Frequency cutoff')
+        ax2.set_ylabel('Wall time (seconds)')
+        ax2.set_title('Sample matching wall time')
+        ax2.set_xticks(range(len(freqs)))
+        ax2.set_xticklabels(freqs)
+
+        ax3 = fig.add_subplot(gs[0, 2])
+        ax3.bar(range(len(freqs)), self.dataframe['ancestor_match_cputime'],
+                color=colors, width=0.35)
+        ax3.set_xlabel('Frequency cutoff')
+        ax3.set_ylabel('CPU time (seconds)')
+        ax3.set_title('Ancestor matching CPU time')
+        ax3.set_xticks(range(len(freqs)))
+        ax3.set_xticklabels(freqs)
+
+        ax4 = fig.add_subplot(gs[0, 3])
+        ax4.bar(range(len(freqs)), self.dataframe['sample_match_cputime'],
+                color=colors, width=0.35)
+        ax4.set_xlabel('Frequency cutoff')
+        ax4.set_ylabel('CPU time (seconds)')
+        ax4.set_title('Sample matching CPU time')
+        ax4.set_xticks(range(len(freqs)))
+        ax4.set_xticklabels(freqs)
+
+        ax5 = fig.add_subplot(gs[1, :])
+        for i, freq in enumerate(freqs):
+            ancestors_per_epoch_str = self.dataframe.loc[
+                self.dataframe['frequency'] == freq, 'ancestors_per_epoch'].iloc[0]
+            ancestors_per_epoch = np.array(eval(ancestors_per_epoch_str))
+            ax5.scatter(range(len(ancestors_per_epoch)), ancestors_per_epoch,
+                        color=colors[i], label=f'{freq}', s=50)
+        ax5.set_xlabel('Epoch')
+        ax5.set_ylabel('Number of Ancestors')
+        ax5.set_title('Ancestor Group Counts per Epoch')
+        ax5.legend(title='Frequency cutoff', loc='upper left')
+
+        plt.tight_layout()
+        plt.show()
 
 def simulate_stdpopsim(n, seed, seq_length):
     species = stdpopsim.get_species("HomSap")
