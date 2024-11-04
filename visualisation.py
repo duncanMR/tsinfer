@@ -25,11 +25,25 @@ import tsinfer
 sns.set_theme(style="whitegrid")
 pd.options.mode.chained_assignment = None
 
-def plot_ancestor_boxplot(df, cutoffs, vars, var_labels, title, y_units="bp", y_log=False):
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_ancestor_boxplot(df, cutoffs, var_dict, var_labels, title, y_units="bp", y_log=False, save_path=None):
+    df = df.copy()  # To avoid SettingWithCopyWarning
     df['frequency_bin'] = pd.cut(df['frequency'], bins=cutoffs, include_lowest=True)
     df['frequency_bin'] = df['frequency_bin'].apply(
         lambda x: f"({x.left:.2f}, {x.right:.2f}]"
     )
+    
+    # Extract variables and corresponding colors from var_dict
+    vars = list(var_dict.keys())
+    colors = list(var_dict.values())
+    
+    # Create a mapping from variable names to their formatted labels
+    var_label_mapping = dict(zip(vars, var_labels))
+
+    # Melt the dataframe and map the 'type' column to the formatted labels
     lengths_df = pd.melt(
         df, 
         id_vars=['frequency_bin'], 
@@ -37,27 +51,46 @@ def plot_ancestor_boxplot(df, cutoffs, vars, var_labels, title, y_units="bp", y_
         var_name='type', 
         value_name='value'
     )
+    lengths_df['type'] = lengths_df['type'].map(var_label_mapping)
 
-    lengths_df['type'] = lengths_df['type'].map(dict(zip(vars, var_labels)))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 7), gridspec_kw={'height_ratios': [4, 1]})
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [4, 1]})
-
-    sns.boxplot(x='frequency_bin', y='value', hue='type', data=lengths_df, palette='tab10', saturation=1, hue_order=var_labels, ax=ax1)
-    ax1.legend(title='Ancestor type')
+    # Use colors from var_dict in the boxplot palette, mapped by formatted labels
+    palette = {label: color for label, color in zip(var_labels, colors)}
+    sns.boxplot(
+        x='frequency_bin', 
+        y='value', 
+        hue='type', 
+        data=lengths_df, 
+        palette=palette, 
+        saturation=1, 
+        hue_order=var_labels, 
+        ax=ax1
+    )
+    
+    # Adjust legend position to the right of the plot
+    ax1.legend(title='Ancestor type', loc='upper left', bbox_to_anchor=(1.02, 1))
+    
     ax1.set_xlabel("Ancestor age interval (frequency)")
     ax1.set_ylabel(f"Ancestor length ({y_units})")
     ax1.set_title(title)
-    if y_log is True:
+    if y_log:
         ax1.set_yscale('log')
 
+    # Plot quantile counts
     quantile_counts = df['frequency_bin'].value_counts(sort=False)
-
-    sns.barplot(x=quantile_counts.index, y=quantile_counts.values, ax=ax2, color='#ced4da',linewidth=1, edgecolor="black")
+    sns.barplot(x=quantile_counts.index, y=quantile_counts.values, ax=ax2, color='#ced4da', linewidth=1, edgecolor="black")
     ax2.set_ylabel("Count")
     ax2.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
     ax2.set_xlabel("")
-    plt.tight_layout()
-    plt.show()
+    plt.tight_layout(rect=[0, 0, 0.85, 1])  # Add margin for legend on the right
+    
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close(fig)  # Close the figure to free up memory
+    else:
+        plt.show()
+
 
 def compare_ancestors(ancestor_dict):
     assert len(ancestor_dict) == 2

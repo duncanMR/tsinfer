@@ -12,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 
 class TestMatchingPerformance:
-    def __init__(self, sample_data, freq_list=[0.8, 1], num_threads=24):
+    def __init__(self, sample_data=None, freq_list=[0.8, 1], num_threads=24):
         self.sample_data = sample_data
         self.freq_list = freq_list
         self.data_list = [] 
@@ -22,10 +22,14 @@ class TestMatchingPerformance:
 
     def run_matching(self):
         inferred_anc = tsinfer.generate_ancestors(self.sample_data, progress_monitor=True)
-        
+        all_sites = inferred_anc.sites_position[:]
+
         for i, freq in enumerate(self.freq_list):
             print(f'Inferring ARG with frequency cutoff {freq}')
             filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=freq)
+            filtered_sites = filtered_anc.sites_position[:]
+            removed_sites = np.setdiff1d(all_sites, filtered_sites)
+            
 
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
@@ -67,7 +71,7 @@ class TestMatchingPerformance:
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
 
-        csv_path = os.path.join(output_folder, f"{prefix}_wall_times.csv")
+        csv_path = os.path.join(output_folder, f"{prefix}_df.csv")
         self.dataframe.to_csv(csv_path, index=False)
 
         for freq, ts in self.inferred_ts.items():
@@ -77,7 +81,7 @@ class TestMatchingPerformance:
         print(f"Data saved to {output_folder} with prefix '{prefix}'")
 
     def load(self, output_folder, prefix):
-        csv_path = os.path.join(output_folder, f"{prefix}_wall_times.csv")
+        csv_path = os.path.join(output_folder, f"{prefix}_df.csv")
         self.dataframe = pd.read_csv(csv_path)
         self.freq_list = self.dataframe['frequency'].tolist()
 
@@ -86,13 +90,15 @@ class TestMatchingPerformance:
             formatted_freq = f"{freq:.1f}"
             print(f"Loading tree sequence for frequency {formatted_freq}")
             ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
-            self.inferred_ts[freq] = tszip.decompress(ts_path)
+            if os.path.exists(ts_path):
+                self.inferred_ts[freq] = tszip.decompress(ts_path)
 
-    def visualise(self):
+    def visualise(self, title=None):
         freqs = self.dataframe['frequency'].tolist()
         colors = plt.colormaps.get_cmap('tab10').colors[:len(freqs)]
 
         fig = plt.figure(figsize=(15, 8))
+        fig.subplots_adjust(top=0.6)
         gs = fig.add_gridspec(2, 4, height_ratios=[1, 2])
 
         ax1 = fig.add_subplot(gs[0, 0])
@@ -137,13 +143,16 @@ class TestMatchingPerformance:
                 self.dataframe['frequency'] == freq, 'ancestors_per_epoch'].iloc[0]
             ancestors_per_epoch = np.array(eval(ancestors_per_epoch_str))
             ax5.scatter(range(len(ancestors_per_epoch)), ancestors_per_epoch,
-                        color=colors[i], label=f'{freq}', s=50)
+                        color=colors[i], label=f'{freq}', s=20, alpha=0.3)
         ax5.set_xlabel('Epoch')
-        ax5.set_ylabel('Number of Ancestors')
-        ax5.set_title('Ancestor Group Counts per Epoch')
+        ax5.set_ylabel('Number of ancestors in epoch')
+        ax5.set_yscale('log')
+        ax5.set_title('Ancestor counts per epoch')
         ax5.legend(title='Frequency cutoff', loc='upper left')
 
         plt.tight_layout()
+        if title is not None:
+            plt.suptitle(title, y=1.02, fontweight='bold')
         plt.show()
 
 def simulate_stdpopsim(n, seed, seq_length):

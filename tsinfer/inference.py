@@ -403,6 +403,7 @@ def generate_ancestors(
     log_path=None,
     num_skipped=10,
     iteration=None,
+    sample_frac=0.5,
     **kwargs,
 ):
     """
@@ -493,6 +494,7 @@ def generate_ancestors(
         log_path=log_path,
         num_skipped=num_skipped,
         iteration=iteration,
+        sample_frac=sample_frac,
         )
     generator.add_sites(exclude_positions)
     ancestor_data = generator.run()
@@ -1407,6 +1409,7 @@ class AncestorsGenerator:
         sample_data,
         ancestor_data_path,
         ancestor_data_kwargs,
+        sample_frac=0.5,
         log_path=None,
         num_skipped=None,
         iteration=None,
@@ -1434,6 +1437,7 @@ class AncestorsGenerator:
         self.log_path = log_path
         self.num_skipped = num_skipped
         self.iteration = iteration
+        self.sample_frac = sample_frac
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1469,6 +1473,7 @@ class AncestorsGenerator:
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
                 method='primary',
+                sample_frac=sample_frac,
             )
         elif engine == constants.NUMBA_ALT_ENGINE:
             logger.debug("Using alternative Numba AncestorBuilder implementation")
@@ -1563,6 +1568,7 @@ class AncestorsGenerator:
                             'num_samples',
                             'engine',
                             'iteration',
+                            'sample_frac',
                         ])) + '\n'
                     )
         for index, (t, focal_sites) in enumerate(self.descriptors):
@@ -1605,6 +1611,7 @@ class AncestorsGenerator:
                                 self.num_samples,
                                 self.engine,
                                 self.iteration,
+                                self.sample_frac,
                             ])) + '\n'
                         )
 

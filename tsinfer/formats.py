@@ -3520,6 +3520,7 @@ class AncestorData(DataContainer):
         ragged_sites = focal_sites[sites_time > max_frequency]
         sites_to_remove = np.concatenate(ragged_sites)
         sites_to_remove = np.sort(sites_to_remove)
+        print(f'Removing {len(sites_to_remove)} sites')
         site_mask = ~np.isin(np.arange(num_sites), sites_to_remove)
         filtered_pos = pos[site_mask]
         num_filtered_sites = len(filtered_pos)

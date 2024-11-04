@@ -130,13 +130,13 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
             haplotype=a[s:e],
         )
 
-def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1):
+def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1, sample_frac=0.5):
     """
     Run a simulation under args and return the samples, plus the true and the inferred
     ancestors
     """
     sample_data = tsinfer.SampleData.from_tree_sequence(ts)
-    inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine)
+    inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine, sample_frac=sample_frac)
     filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
@@ -171,7 +171,7 @@ def ancestor_data_by_pos(anc1, anc2):
 
 
 def compare_true_vs_inferred_anc(
-    sample_data, true_anc, inferred_anc,
+    sample_data, true_anc, inferred_anc, sample_frac=0.5
 ):
     """
     Calculate quality measures per focal site, as these are comparable from inferred
@@ -414,6 +414,7 @@ def compare_true_vs_inferred_anc(
     df["copied_length"] = copied_length
     df['copied_length'] = df['copied_length']
     df["copied_length_ratio"] = df.copied_length / df.inferred_length
+    df['sample_frac'] = sample_frac
     #df.drop_duplicates(subset=['true_node', 'inferred_node'], inplace=True)
 
     return df, ts

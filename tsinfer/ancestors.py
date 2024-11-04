@@ -27,8 +27,7 @@ from numba.experimental import jitclass
 import attr
 import collections
 import time as time_
-import numba
-
+import math
 import tsinfer.constants as constants
 
 logger = logging.getLogger(__name__)
@@ -56,14 +55,17 @@ class Site:
     id = attr.ib()
     time = attr.ib()
 
+@njit
+def compute_sample_set_threshold(sample_set_size, sample_frac):
+    return math.floor(sample_set_size * sample_frac)
 
 spec = [
     ("num_samples", int32),
     ("num_sites", int32),
     ("sites_time", float64[:]),
     ("genotype_store", int8[:]),
+#    ("sample_frac", float64),
 ]
-
 
 @jitclass(spec)
 class NumbaAncestorBuilder:
@@ -72,6 +74,7 @@ class NumbaAncestorBuilder:
         self.num_samples = num_samples
         self.num_sites = num_sites
         self.genotype_store = genotype_store
+       # self.sample_frac = sample_frac
 
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
@@ -96,7 +99,7 @@ class NumbaAncestorBuilder:
 
         return sample_set, sample_set_size
 
-    def compute_ancestral_states(self, a, focal_site, direction):
+    def compute_ancestral_states(self, a, focal_site, direction, sample_frac):
         """
         For a given focal site, and set of sites to fill in (usually all the ones
         leftwards or rightwards), augment the haplotype array a with the inferred sites
@@ -111,7 +114,7 @@ class NumbaAncestorBuilder:
         assert sample_set_size > 0
 
         # Break when we've lost half of the samples
-        min_sample_set_size = sample_set_size // 2
+        min_sample_set_size = compute_sample_set_threshold(sample_set_size, sample_frac)
         last_site = focal_site
         disagree = np.full(self.num_samples, False)
         site_index = focal_site + direction
@@ -203,7 +206,7 @@ class NumbaAncestorBuilder:
                 site_index += 1
             k += 1
 
-    def make_ancestor(self, a, focal_sites):
+    def make_ancestor(self, a, focal_sites, sample_frac):
         """
         Fills out the array a with the haplotype
         return the start and end of an ancestor
@@ -218,11 +221,11 @@ class NumbaAncestorBuilder:
 
         # Extend rightwards from rightmost focal site
         focal_site = focal_sites[-1]
-        last_site = self.compute_ancestral_states(a, focal_site, +1)
+        last_site = self.compute_ancestral_states(a, focal_site, +1, sample_frac)
         end = last_site + 1
         # Extend leftwards from leftmost focal site")
         focal_site = focal_sites[0]
-        last_site = self.compute_ancestral_states(a, focal_site, -1)
+        last_site = self.compute_ancestral_states(a, focal_site, -1, sample_frac)
         start = last_site
 
         return start, end
@@ -238,6 +241,7 @@ class AncestorBuilder:
         self,
         num_samples,
         max_sites,
+        sample_frac,
         method=1,
         genotype_encoding=None,
     ):
@@ -263,6 +267,7 @@ class AncestorBuilder:
         self.genotype_store = np.zeros(
             max_sites * self.encoded_genotypes_size, dtype=np.uint8
         )
+        self.sample_frac = sample_frac
 
     @property
     def num_sites(self):
@@ -398,11 +403,14 @@ class AncestorBuilder:
                     self.num_sites,
                     self.genotype_store,
                 )
-            return self.builder.make_ancestor(a, focal_sites)
+            return self.builder.make_ancestor(a, focal_sites, self.sample_frac)
         elif self.method == "alternative":
             raise NotImplementedError
         else:
             raise ValueError(f"Unknown method {self.method}")
+
+
+
 
 
 def merge_overlapping_ancestors(start, end, time):
