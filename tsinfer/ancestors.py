@@ -22,7 +22,7 @@ Ancestor handling routines.
 import logging
 import numpy as np
 import tskit
-from numba import njit, int8, int32, float64
+from numba import njit, int8, int32, int64,float64, types
 from numba.experimental import jitclass
 import attr
 import collections
@@ -55,26 +55,26 @@ class Site:
     id = attr.ib()
     time = attr.ib()
 
-@njit
-def compute_sample_set_threshold(sample_set_size, sample_frac):
-    return math.floor(sample_set_size * sample_frac)
 
 spec = [
     ("num_samples", int32),
     ("num_sites", int32),
     ("sites_time", float64[:]),
     ("genotype_store", int8[:]),
-#    ("sample_frac", float64),
+    ("sample_set_size", int32),
+    ("sample_func", types.FunctionType(int32(int32))),
 ]
 
 @jitclass(spec)
 class NumbaAncestorBuilder:
-    def __init__(self, sites_time, num_samples, num_sites, genotype_store):
+    def __init__(self, sites_time, num_samples, num_sites, genotype_store, sample_func):
         self.sites_time = sites_time
         self.num_samples = num_samples
         self.num_sites = num_sites
         self.genotype_store = genotype_store
-       # self.sample_frac = sample_frac
+        self.sample_set_size = 0
+        self.sample_func = sample_func
+    
 
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
@@ -99,7 +99,7 @@ class NumbaAncestorBuilder:
 
         return sample_set, sample_set_size
 
-    def compute_ancestral_states(self, a, focal_site, direction, sample_frac):
+    def compute_ancestral_states(self, a, focal_site, direction):
         """
         For a given focal site, and set of sites to fill in (usually all the ones
         leftwards or rightwards), augment the haplotype array a with the inferred sites
@@ -111,10 +111,11 @@ class NumbaAncestorBuilder:
         """
         focal_time = self.sites_time[focal_site]
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
+        self.sample_set_size = sample_set_size
         assert sample_set_size > 0
 
         # Break when we've lost half of the samples
-        min_sample_set_size = compute_sample_set_threshold(sample_set_size, sample_frac)
+        min_sample_set_size = self.sample_func(sample_set_size)
         last_site = focal_site
         disagree = np.full(self.num_samples, False)
         site_index = focal_site + direction
@@ -206,7 +207,7 @@ class NumbaAncestorBuilder:
                 site_index += 1
             k += 1
 
-    def make_ancestor(self, a, focal_sites, sample_frac):
+    def make_ancestor(self, a, focal_sites):
         """
         Fills out the array a with the haplotype
         return the start and end of an ancestor
@@ -221,14 +222,14 @@ class NumbaAncestorBuilder:
 
         # Extend rightwards from rightmost focal site
         focal_site = focal_sites[-1]
-        last_site = self.compute_ancestral_states(a, focal_site, +1, sample_frac)
+        last_site = self.compute_ancestral_states(a, focal_site, +1)
         end = last_site + 1
         # Extend leftwards from leftmost focal site")
         focal_site = focal_sites[0]
-        last_site = self.compute_ancestral_states(a, focal_site, -1, sample_frac)
+        last_site = self.compute_ancestral_states(a, focal_site, -1)
         start = last_site
 
-        return start, end
+        return start, end, self.sample_set_size
 
 
 class AncestorBuilder:
@@ -241,7 +242,7 @@ class AncestorBuilder:
         self,
         num_samples,
         max_sites,
-        sample_frac,
+        sample_func,
         method=1,
         genotype_encoding=None,
     ):
@@ -267,7 +268,7 @@ class AncestorBuilder:
         self.genotype_store = np.zeros(
             max_sites * self.encoded_genotypes_size, dtype=np.uint8
         )
-        self.sample_frac = sample_frac
+        self.sample_func = sample_func
 
     @property
     def num_sites(self):
@@ -402,8 +403,9 @@ class AncestorBuilder:
                     self.num_samples,
                     self.num_sites,
                     self.genotype_store,
+                    self.sample_func,
                 )
-            return self.builder.make_ancestor(a, focal_sites, self.sample_frac)
+            return self.builder.make_ancestor(a, focal_sites)
         elif self.method == "alternative":
             raise NotImplementedError
         else:

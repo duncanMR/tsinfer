@@ -35,6 +35,7 @@ import queue
 import tempfile
 import threading
 import time as time_
+from numba import njit, int32
 import csv
 
 import humanize
@@ -404,6 +405,7 @@ def generate_ancestors(
     num_skipped=10,
     iteration=None,
     sample_frac=0.5,
+    sample_func=None,
     **kwargs,
 ):
     """
@@ -495,6 +497,7 @@ def generate_ancestors(
         num_skipped=num_skipped,
         iteration=iteration,
         sample_frac=sample_frac,
+        sample_func=sample_func,
         )
     generator.add_sites(exclude_positions)
     ancestor_data = generator.run()
@@ -1410,6 +1413,7 @@ class AncestorsGenerator:
         ancestor_data_path,
         ancestor_data_kwargs,
         sample_frac=0.5,
+        sample_func=None,
         log_path=None,
         num_skipped=None,
         iteration=None,
@@ -1438,6 +1442,7 @@ class AncestorsGenerator:
         self.num_skipped = num_skipped
         self.iteration = iteration
         self.sample_frac = sample_frac
+        self.sample_func = sample_func
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1467,13 +1472,20 @@ class AncestorsGenerator:
                 genotype_encoding=genotype_encoding,
             )
         elif engine == constants.NUMBA_ENGINE:
+            if sample_func is None:
+                sample_frac = self.sample_frac
+                @njit(int32(int32))
+                def sample_func(sample_set_size):
+                    return math.floor(sample_set_size * sample_frac)
+                self.sample_func = sample_func
+
             logger.debug("Using Numba AncestorBuilder implementation")
             self.ancestor_builder = ancestors.AncestorBuilder(
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
                 method='primary',
-                sample_frac=sample_frac,
+                sample_func=sample_func,
             )
         elif engine == constants.NUMBA_ALT_ENGINE:
             logger.debug("Using alternative Numba AncestorBuilder implementation")
@@ -1550,70 +1562,101 @@ class AncestorsGenerator:
 
     def _run_synchronous(self, progress):
         a = np.zeros(self.num_sites, dtype=np.int8)
-        log_path = self.log_path
-        num_skipped = self.num_skipped
-        if log_path is not None:
-            if not os.path.exists(log_path):
-                with open(log_path, 'w') as log:
-                    log.write(
-                        '\t'.join(map(str, [
-                            'anc_index',
-                            'duration',
-                            'start',
-                            'end',
-                            'span',
-                            'time',
-                            'num_focal_sites',
-                            'num_sites',
-                            'num_samples',
-                            'engine',
-                            'iteration',
-                            'sample_frac',
-                        ])) + '\n'
-                    )
-        for index, (t, focal_sites) in enumerate(self.descriptors):
-            before = time_.perf_counter()
-            start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
-            duration = time_.perf_counter() - before
-            logger.debug(
-                "Made ancestor in {:.2f}s at timepoint {} "
-                "from {} to {} (len={}) with {} focal sites ({})".format(
-                    duration,
-                    t,
-                    start,
-                    end,
-                    end - start,
-                    len(focal_sites),
-                    focal_sites,
-                )
-            )
-            self.ancestor_data.add_ancestor(
-                start=start,
-                end=end,
-                time=t,
-                focal_sites=focal_sites,
-                haplotype=a[start:end],
-            )
-            progress.update()
+
+        if self.engine == constants.NUMBA_ENGINE:
+            log_path = self.log_path
+            num_skipped = self.num_skipped
             if log_path is not None:
-                if (index + num_skipped - 1) % num_skipped == 0:
-                    with open(log_path, 'a') as log:
+                if not os.path.exists(log_path):
+                    with open(log_path, 'w') as log:
                         log.write(
                             '\t'.join(map(str, [
-                                index,
-                                duration,
-                                start,
-                                end,
-                                end - start,
-                                t,
-                                len(focal_sites),
-                                self.num_sites,
-                                self.num_samples,
-                                self.engine,
-                                self.iteration,
-                                self.sample_frac,
+                                'anc_index',
+                                'duration',
+                                'start',
+                                'end',
+                                'span',
+                                'time',
+                                'num_focal_sites',
+                                'num_sites',
+                                'num_samples',
+                                'engine',
+                                'iteration',
+                                'sample_frac',
+                                'sample_set_size',
+                                'min_sample_set_size',
                             ])) + '\n'
                         )
+            for index, (t, focal_sites) in enumerate(self.descriptors):
+                before = time_.perf_counter()
+                start, end, sample_set_size = self.ancestor_builder.make_ancestor(focal_sites, a)
+                duration = time_.perf_counter() - before
+                logger.debug(
+                    "Made ancestor in {:.2f}s at timepoint {} "
+                    "from {} to {} (len={}) with {} focal sites ({})".format(
+                        duration,
+                        t,
+                        start,
+                        end,
+                        end - start,
+                        len(focal_sites),
+                        focal_sites,
+                    )
+                )
+                self.ancestor_data.add_ancestor(
+                    start=start,
+                    end=end,
+                    time=t,
+                    focal_sites=focal_sites,
+                    haplotype=a[start:end],
+                )
+                progress.update()
+                if log_path is not None:
+                    if (index + num_skipped - 1) % num_skipped == 0:
+                        with open(log_path, 'a') as log:
+                            log.write(
+                                '\t'.join(map(str, [
+                                    index,
+                                    duration,
+                                    start,
+                                    end,
+                                    end - start,
+                                    t,
+                                    len(focal_sites),
+                                    self.num_sites,
+                                    self.num_samples,
+                                    self.engine,
+                                    self.iteration,
+                                    self.sample_frac,
+                                    sample_set_size,
+                                    self.sample_func(sample_set_size),
+                                ])) + '\n'
+                            )
+        else:
+            for t, focal_sites in self.descriptors:
+                before = time_.perf_counter()
+                start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
+                duration = time_.perf_counter() - before
+                logger.debug(
+                    "Made ancestor in {:.2f}s at timepoint {} "
+                    "from {} to {} (len={}) with {} focal sites ({})".format(
+                        duration,
+                        t,
+                        start,
+                        end,
+                        end - start,
+                        len(focal_sites),
+                        focal_sites,
+                    )
+                )
+                self.ancestor_data.add_ancestor(
+                    start=start,
+                    end=end,
+                    time=t,
+                    focal_sites=focal_sites,
+                    haplotype=a[start:end],
+                )
+                progress.update()
 
     def _run_threaded(self, progress):
         # This works by pushing the ancestor descriptors onto the build_queue,
