@@ -1474,7 +1474,7 @@ class AncestorsGenerator:
         elif engine == constants.NUMBA_ENGINE:
             if sample_func is None:
                 sample_frac = self.sample_frac
-                @njit(int32(int32))
+                @njit#(int32(int32))
                 def sample_func(sample_set_size):
                     return math.floor(sample_set_size * sample_frac)
                 self.sample_func = sample_func
@@ -1609,6 +1609,7 @@ class AncestorsGenerator:
                     time=t,
                     focal_sites=focal_sites,
                     haplotype=a[start:end],
+                    sample_set_size=sample_set_size,
                 )
                 progress.update()
                 if log_path is not None:

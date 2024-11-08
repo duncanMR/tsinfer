@@ -62,7 +62,7 @@ spec = [
     ("sites_time", float64[:]),
     ("genotype_store", int8[:]),
     ("sample_set_size", int32),
-    ("sample_func", types.FunctionType(int32(int32))),
+    ("sample_func", types.FunctionType(int64(int64))),
 ]
 
 @jitclass(spec)

@@ -7,7 +7,8 @@ import bisect
 import random
 import colorama
 import pandas as pd
-import numba
+import math
+from numba import njit
 
 
 def assert_smc(ts):
@@ -130,20 +131,20 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
             haplotype=a[s:e],
         )
 
-def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1, sample_frac=0.5):
+def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1, sample_frac=0.5, sample_func=None):
     """
     Run a simulation under args and return the samples, plus the true and the inferred
     ancestors
-    """
+    """       
     sample_data = tsinfer.SampleData.from_tree_sequence(ts)
-    inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine, sample_frac=sample_frac)
-    filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
+    inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine, sample_frac=sample_frac, sample_func=sample_func)
+    #filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
     )
     build_simulated_ancestors(true_anc, ts)
     true_anc.finalise()
-    return sample_data, true_anc, filtered_anc
+    return sample_data, true_anc, inferred_anc
 
 
 def ancestor_data_by_pos(anc1, anc2):
@@ -171,7 +172,7 @@ def ancestor_data_by_pos(anc1, anc2):
 
 
 def compare_true_vs_inferred_anc(
-    sample_data, true_anc, inferred_anc, sample_frac=0.5
+    sample_data, true_anc, inferred_anc, sample_frac=-1, sample_func=None,
 ):
     """
     Calculate quality measures per focal site, as these are comparable from inferred
@@ -180,6 +181,12 @@ def compare_true_vs_inferred_anc(
     that are shared. We also need to limit the bounds over which we calculate quality
     so that we only look at the regions of overlap between true and inferred ancestors
     """
+    
+    if sample_func is None:
+        @njit
+        def sample_func(sample_set_size):
+            return math.floor(sample_set_size * sample_frac)
+
     anc_indices = ancestor_data_by_pos(true_anc, inferred_anc)
     shared_positions = np.array(list(sorted(anc_indices.keys())))
     # append sequence_length to pos so that ancestors_end[:] indices are always valid
@@ -214,6 +221,9 @@ def compare_true_vs_inferred_anc(
     est_len = {}
     true_time = {}
     true_node = {}
+    sample_set_size = {}
+    min_sample_set_size = {}
+    num_allowed_conflicts = {}
     # find the left and right edges of the overlap - iterate by true time in reverse
     for i, focal_pos in enumerate(
         sorted(
@@ -222,6 +232,9 @@ def compare_true_vs_inferred_anc(
         )
     ):
         true_index, inferred_index = anc_indices[focal_pos]
+        anc_sample_set_size = inferred_anc.ancestors_sample_set_size[:][inferred_index]
+        anc_min_sample_set_size = sample_func(anc_sample_set_size)
+        anc_num_allowed_conflicts = anc_sample_set_size - anc_min_sample_set_size
         # left (start) is biggest of exact and estim
         true_start = true_positions[true_anc.ancestors_start[:][true_index]]
         inferred_start = inferred_positions[
@@ -272,7 +285,9 @@ def compare_true_vs_inferred_anc(
         should_be_0 = inferred_comp & ~true_comp
 
         assert np.sum(should_be_1 | should_be_0) == np.sum(bad_sites)
-
+        sample_set_size[focal_pos] = anc_sample_set_size
+        min_sample_set_size[focal_pos] = anc_min_sample_set_size
+        num_allowed_conflicts[focal_pos] = anc_num_allowed_conflicts
         olap_n_sites[focal_pos] = len(true_comp)
         olap_left[focal_pos] = olap_start
         olap_right[focal_pos] = olap_end
@@ -328,6 +343,9 @@ def compare_true_vs_inferred_anc(
                 t,
                 true_time[p],
                 inferred_time[p],
+                sample_set_size[p],
+                min_sample_set_size[p],
+                num_allowed_conflicts[p],
             )
             for t, p in enumerate(sorted(shared_positions, key=lambda x: true_time[x]))
         ],
@@ -353,6 +371,9 @@ def compare_true_vs_inferred_anc(
             "true_time_order",
             "true_time",
             "frequency",
+            "sample_set_size",
+            "min_sample_set_size",
+            "num_allowed_conflicts",
         ),
     )
 
@@ -420,7 +441,7 @@ def compare_true_vs_inferred_anc(
     return df, ts
 
 
-@numba.njit
+@njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):
     num_edges = edges_left.shape[0]
     copied_left = np.zeros(num_nodes, dtype=np.float64) + np.inf
