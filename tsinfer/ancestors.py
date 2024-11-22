@@ -22,14 +22,13 @@ Ancestor handling routines.
 import logging
 import numpy as np
 import tskit
-from numba import njit, int8, int32, int64,float64, types
+import uuid
+from numba import njit, int8, int32, int64, float64, types, boolean
 from numba.experimental import jitclass
 import attr
 import collections
 import time as time_
-import math
 import tsinfer.constants as constants
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,27 +53,64 @@ class Site:
 
     id = attr.ib()
     time = attr.ib()
+    
 
+@attr.s(order=False, eq=False)
+class Ancestor:
+    """
+    An ancestor object.
+    """
+    start = attr.ib()
+    end = attr.ib()
+    focal_sites = attr.ib()
+    full_haplotype = attr.ib()
+    full_sample_counts = attr.ib()
+    min_sample_count = attr.ib()
+
+    @property
+    def haplotype(self):
+        return self.full_haplotype[self.start : self.end]
+    
+    @property
+    def sample_counts(self):
+        return self.full_sample_counts[self.start : self.end]
+
+    def __eq__(self, other):
+        return (
+            self.start == other.start
+            and self.end == other.end
+            and np.array_equal(self.focal_sites, other.focal_sites)
+            and np.array_equal(self.full_haplotype, other.full_haplotype)
+        )
 
 spec = [
     ("num_samples", int32),
     ("num_sites", int32),
     ("sites_time", float64[:]),
     ("genotype_store", int8[:]),
-    ("sample_set_size", int32),
     ("sample_func", types.FunctionType(int64(int64))),
+    ("full_haplotype", int8[:]),
+    ("full_sample_counts", int32[:]),
+    ("min_sample_count", int32),
+    ("start", int32),
+    ("end", int32),
+    ("freq_threshold", float64),
 ]
 
 @jitclass(spec)
 class NumbaAncestorBuilder:
-    def __init__(self, sites_time, num_samples, num_sites, genotype_store, sample_func):
+    def __init__(self, sites_time, num_samples, num_sites, genotype_store, sample_func, freq_threshold):
         self.sites_time = sites_time
         self.num_samples = num_samples
         self.num_sites = num_sites
         self.genotype_store = genotype_store
-        self.sample_set_size = 0
         self.sample_func = sample_func
-    
+        self.freq_threshold = freq_threshold
+        self.full_haplotype = np.full(self.num_sites, -1, dtype=np.int8)
+        self.full_sample_counts = np.full(self.num_sites, -1, dtype=np.int32)
+        self.min_sample_count = -1
+        self.start = -1
+        self.end = -1
 
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
@@ -99,7 +135,7 @@ class NumbaAncestorBuilder:
 
         return sample_set, sample_set_size
 
-    def compute_ancestral_states(self, a, focal_site, direction):
+    def compute_ancestral_states(self, focal_site, direction):
         """
         For a given focal site, and set of sites to fill in (usually all the ones
         leftwards or rightwards), augment the haplotype array a with the inferred sites
@@ -109,18 +145,23 @@ class NumbaAncestorBuilder:
         At the moment we assume that the derived state is 1. We should alter this so
         that we allow the derived state to be a different non-zero integer.
         """
+        
         focal_time = self.sites_time[focal_site]
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
-        self.sample_set_size = sample_set_size
+        self.full_sample_counts[focal_site] = sample_set_size
         assert sample_set_size > 0
 
+        last_site = focal_site
+        if focal_time >= self.freq_threshold:
+            return last_site
         # Break when we've lost half of the samples
         min_sample_set_size = self.sample_func(sample_set_size)
-        last_site = focal_site
+        self.min_sample_count = min_sample_set_size
         disagree = np.full(self.num_samples, False)
         site_index = focal_site + direction
         while site_index >= 0 and site_index < self.num_sites:
-            a[site_index] = 0
+            self.full_haplotype[site_index] = 0
+            self.full_sample_counts[site_index] = sample_set_size
             last_site = site_index
             if self.sites_time[site_index] > focal_time:
                 ones = 0
@@ -134,7 +175,7 @@ class NumbaAncestorBuilder:
                         zeros += 1
                     j += 1
                 if ones + zeros == 0:
-                    a[site_index] = -1
+                    self.full_haplotype[site_index] = -1
                 else:
                     consensus = 1 if ones >= zeros else 0
                     j = 0
@@ -144,7 +185,7 @@ class NumbaAncestorBuilder:
                         if disagree[u] and (genotype != consensus) and (genotype != -1):
                             sample_set[j] = -1
                         j += 1
-                    a[site_index] = consensus
+                    self.full_haplotype[site_index] = consensus
 
                     if len(sample_set) <= min_sample_set_size:
                         break
@@ -171,13 +212,14 @@ class NumbaAncestorBuilder:
                         break
             site_index += direction
 
-        assert a[last_site] != -1
+        assert self.full_haplotype[last_site] != -1
         return last_site
 
-    def compute_between_focal_sites(self, a, focal_sites):
+    def compute_between_focal_sites(self, focal_sites):
         focal_site = focal_sites[0]
         focal_time = self.sites_time[focal_site]
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
+        self.full_sample_counts[focal_site] = sample_set_size
         assert sample_set_size > 0
 
         # Interpolate ancestral haplotype within focal region (i.e. region
@@ -186,9 +228,10 @@ class NumbaAncestorBuilder:
         while k < (len(focal_sites) - 1):
             # Interpolate region between focal site j and focal site j+1
             site_index = focal_sites[k] + 1
-
+            
             while site_index < focal_sites[k + 1]:
-                a[site_index] = 0
+                self.full_haplotype[site_index] = 0
+                self.full_sample_counts[site_index] = sample_set_size
                 if self.sites_time[site_index] > focal_time:
                     ones = 0
                     zeros = 0
@@ -201,35 +244,32 @@ class NumbaAncestorBuilder:
                             zeros += 1
                         j += 1
                     if ones + zeros == 0:
-                        a[site_index] = -1
+                        self.full_haplotype[site_index] = -1
                     elif ones >= zeros:
-                        a[site_index] = 1
+                        self.full_haplotype[site_index] = 1
                 site_index += 1
             k += 1
 
-    def make_ancestor(self, a, focal_sites):
+    def make_ancestor(self, focal_sites):
         """
         Fills out the array a with the haplotype
         return the start and end of an ancestor
         """
-
         focal_site = focal_sites[0]
-        a[:] = -1
         for site in focal_sites:
-            a[site] = 1
+            self.full_haplotype[site] = 1
 
-        self.compute_between_focal_sites(a, focal_sites)
+        self.compute_between_focal_sites(focal_sites)
 
         # Extend rightwards from rightmost focal site
         focal_site = focal_sites[-1]
-        last_site = self.compute_ancestral_states(a, focal_site, +1)
-        end = last_site + 1
+        last_site = self.compute_ancestral_states(focal_site, +1)
+        self.end = last_site + 1
         # Extend leftwards from leftmost focal site")
         focal_site = focal_sites[0]
-        last_site = self.compute_ancestral_states(a, focal_site, -1)
-        start = last_site
-
-        return start, end, self.sample_set_size
+        last_site = self.compute_ancestral_states(focal_site, -1)
+        self.start = last_site
+        
 
 
 class AncestorBuilder:
@@ -243,14 +283,18 @@ class AncestorBuilder:
         num_samples,
         max_sites,
         sample_func,
+        freq_threshold,
+        one_site_per_anc,
         method=1,
         genotype_encoding=None,
     ):
         self.num_samples = num_samples
         self.sites = []
         self.builder = None
+        self.freq_threshold = freq_threshold
         self.method = method
         self.sites_time = np.zeros(max_sites, dtype=np.float64)
+        self.one_site_per_anc = one_site_per_anc
         # Create a mapping from time to sites. Different sites can exist at the same
         # timepoint. If we expect them to be part of the same ancestor node we can give
         # them the same ancestor_uid: the time_map contains values keyed by time, with
@@ -331,7 +375,11 @@ class AncestorBuilder:
         # Sites with an identical variant distribution (i.e. with the same
         # genotypes.tobytes() value) and at the same time, are put into the same ancestor
         # to which we allocate a unique ID (just use the genotypes value)
-        ancestor_uid = genotypes.tobytes()
+        if self.one_site_per_anc is True:
+            ancestor_uid = str(uuid.uuid4())
+        else:
+            ancestor_uid = genotypes.tobytes()
+    
         # Add each site to the list for this ancestor_uid at this timepoint
         sites_at_fixed_timepoint[ancestor_uid].append(site_id)
 
@@ -391,7 +439,7 @@ class AncestorBuilder:
                 ret.append((t, focal_sites[start:]))
         return ret
 
-    def make_ancestor(self, focal_sites, a):
+    def make_ancestor(self, focal_sites):
         """
         Fills out the array a with the haplotype
         return the start and end of an ancestor
@@ -399,19 +447,28 @@ class AncestorBuilder:
         if self.method == "primary":
             if self.builder is None:
                 self.builder = NumbaAncestorBuilder(
-                    self.sites_time,
-                    self.num_samples,
-                    self.num_sites,
-                    self.genotype_store,
-                    self.sample_func,
+                    sites_time=self.sites_time,
+                    num_samples=self.num_samples,
+                    num_sites=self.num_sites,
+                    genotype_store=self.genotype_store,
+                    sample_func=self.sample_func,
+                    freq_threshold=self.freq_threshold,
                 )
-            return self.builder.make_ancestor(a, focal_sites)
+            self.builder.make_ancestor(focal_sites)
+            
+            #print(self.builder.full_sample_counts[self.builder.start:self.builder.end])
+            return Ancestor(
+                start=self.builder.start,
+                end=self.builder.end,
+                focal_sites=focal_sites,
+                full_haplotype=self.builder.full_haplotype,
+                full_sample_counts=self.builder.full_sample_counts,
+                min_sample_count=self.builder.min_sample_count,
+            )
         elif self.method == "alternative":
             raise NotImplementedError
         else:
             raise ValueError(f"Unknown method {self.method}")
-
-
 
 
 

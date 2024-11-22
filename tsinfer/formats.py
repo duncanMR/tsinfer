@@ -2880,7 +2880,6 @@ class Ancestor:
     time = attr.ib()
     focal_sites = attr.ib()
     full_haplotype = attr.ib()
-    sample_set_size = attr.ib()
 
     @property
     def haplotype(self):
@@ -2957,8 +2956,6 @@ class AncestorData(DataContainer):
         self.create_dataset("sample_end", dtype=np.int32)
         self.create_dataset("sample_time", dtype=np.float64)
         self.create_dataset("sample_focal_sites", dtype="array:i4")
-        # Added the sample_set_size dataset with fill_value=-1
-        self.create_dataset("sample_set_size", dtype=np.int32, fill_value=-1)
 
         self.create_dataset(
             "variant_position",
@@ -2969,7 +2966,7 @@ class AncestorData(DataContainer):
             dimensions=["variants"],
         )
 
-        # We have to include a ploidy dimension for sgkit compatibility
+        # We have to include a ploidy dimension sgkit compatibility
         a = self.create_dataset(
             "call_genotype",
             dtype="i1",
@@ -3001,7 +2998,6 @@ class AncestorData(DataContainer):
         dtype=None,
         compressor=None,
         dimensions=None,
-        fill_value=None,  # Added fill_value parameter
     ):
         if shape is None:
             shape = (0,)
@@ -3019,7 +3015,7 @@ class AncestorData(DataContainer):
             chunks=chunks,
             dtype=dtype,
             compressor=compressor,
-            fill_value=fill_value,  # Use fill_value here
+            fill_value=None,
         )
         ds.attrs["_ARRAY_DIMENSIONS"] = dimensions
         return ds
@@ -3031,7 +3027,6 @@ class AncestorData(DataContainer):
                 "end": self.ancestors_end,
                 "time": self.ancestors_time,
                 "focal_sites": self.ancestors_focal_sites,
-                "sample_set_size": self.ancestors_sample_set_size,  # Added here
                 "full_haplotype": self.ancestors_full_haplotype,
                 "full_haplotype_mask": self.ancestors_full_haplotype_mask,
             },
@@ -3054,7 +3049,6 @@ class AncestorData(DataContainer):
             ("sample_time", zarr_summary(self.ancestors_time)),
             ("sample_focal_sites", zarr_summary(self.ancestors_focal_sites)),
             ("call_genotype", zarr_summary(self.ancestors_full_haplotype)),
-            ("sample_set_size", zarr_summary(self.ancestors_sample_set_size)),  # Added here
         ]
         return super().__str__() + self._format_str(values)
 
@@ -3075,10 +3069,6 @@ class AncestorData(DataContainer):
             # Need to take a different approach with np object arrays.
             and np_obj_equal(
                 self.ancestors_focal_sites[:], other.ancestors_focal_sites[:]
-            )
-            # Added comparison for sample_set_size
-            and np.array_equal(
-                self.ancestors_sample_set_size[:], other.ancestors_sample_set_size[:]
             )
             # TODO For large sets of ancestors, this needs to be done chunk-wise
             and np_obj_equal(
@@ -3102,10 +3092,6 @@ class AncestorData(DataContainer):
         assert len(fc_self) == len(fc_other)
         for sites_self, sites_other in zip(fc_self, fc_other):
             np.testing.assert_array_equal(sites_self, sites_other)
-        # Added assertion for sample_set_size
-        np.testing.assert_array_equal(
-            self.ancestors_sample_set_size[:], other.ancestors_sample_set_size[:]
-        )
         haps_self = self.ancestors_full_haplotype[:]
         haps_other = other.ancestors_full_haplotype[:]
         for hap_self, hap_other in zip(haps_self, haps_other):
@@ -3155,10 +3141,6 @@ class AncestorData(DataContainer):
     @property
     def ancestors_focal_sites(self):
         return self.data["sample_focal_sites"]
-
-    @property
-    def ancestors_sample_set_size(self):
-        return self.data["sample_set_size"]  # Added property
 
     @property
     def ancestors_full_haplotype(self):
@@ -3545,7 +3527,7 @@ class AncestorData(DataContainer):
         filtered_anc = AncestorData(sequence_length=seq_length, position=filtered_pos)
         index_map = np.full(num_sites, -1, dtype=int)
         index_map[site_mask] = np.arange(len(filtered_pos))
-        index_map = np.append(index_map, num_filtered_sites)  # for endpoints
+        index_map = np.append(index_map, num_filtered_sites) #for endpoints
 
         for index, anc in enumerate(self.ancestors()):
             if (index < 2 or anc.time <= max_frequency):
@@ -3574,7 +3556,6 @@ class AncestorData(DataContainer):
                     time=anc.time,
                     focal_sites=focal_sites,
                     haplotype=haplotype,
-                    sample_set_size=anc.sample_set_size,  # Include sample_set_size
                 )
         filtered_anc.finalise()
         return filtered_anc
@@ -3583,7 +3564,7 @@ class AncestorData(DataContainer):
     # Write mode (building and editing)
     ####################################
 
-    def add_ancestor(self, start, end, time, focal_sites, haplotype, sample_set_size=None):
+    def add_ancestor(self, start, end, time, focal_sites, haplotype):
         """
         Adds an ancestor with the specified haplotype, with ancestral material over the
         interval [start:end], that is associated with the specified timepoint and has new
@@ -3610,18 +3591,12 @@ class AncestorData(DataContainer):
         if self._last_time != 0 and time > self._last_time:
             raise ValueError("older ancestors must be added before younger ones")
         self._last_time = time
-
-        # Set default value for sample_set_size if None
-        if sample_set_size is None:
-            sample_set_size = -1  # Or any other default value you prefer
-
         return self.ancestor_writer.add(
             start=start,
             end=end,
             time=time,
             focal_sites=focal_sites,
             haplotype=haplotype,
-            sample_set_size=sample_set_size,  # Added here
         )
 
     def finalise(self):
@@ -3671,7 +3646,6 @@ class AncestorData(DataContainer):
             end=self.ancestors_end[id_],
             time=self.ancestors_time[id_],
             focal_sites=self.ancestors_focal_sites[id_],
-            sample_set_size=self.ancestors_sample_set_size[id_],  # Added here
             full_haplotype=self.ancestors_full_haplotype[:, id_, 0],
         )
 
@@ -3685,7 +3659,6 @@ class AncestorData(DataContainer):
         end = self.ancestors_end[:]
         time = self.ancestors_time[:]
         focal_sites = self.ancestors_focal_sites[:]
-        sample_set_size = self.ancestors_sample_set_size[:]  # Added here
         haplotypes = chunk_iterator(self.ancestors_full_haplotype, indexes, dimension=1)
         if indexes is None:
             indexes = range(len(time))
@@ -3696,7 +3669,6 @@ class AncestorData(DataContainer):
                 end=end[j],
                 time=time[j],
                 focal_sites=focal_sites[j],
-                sample_set_size=sample_set_size[j],  # Added here
                 # [0] to remove ploidy dimension
                 full_haplotype=h[:, 0],
             )

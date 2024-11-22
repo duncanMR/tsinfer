@@ -35,9 +35,8 @@ import queue
 import tempfile
 import threading
 import time as time_
-from numba import njit, int32
-import csv
-
+from numba import njit
+import pandas as pd
 import humanize
 import numpy as np
 import tskit
@@ -406,6 +405,9 @@ def generate_ancestors(
     iteration=None,
     sample_frac=0.5,
     sample_func=None,
+    freq_threshold=1,
+    log_anc=False,
+    one_site_per_anc=False,
     **kwargs,
 ):
     """
@@ -498,16 +500,21 @@ def generate_ancestors(
         iteration=iteration,
         sample_frac=sample_frac,
         sample_func=sample_func,
+        log_anc=log_anc,
+        freq_threshold=freq_threshold,
+        one_site_per_anc=one_site_per_anc,
         )
     generator.add_sites(exclude_positions)
-    ancestor_data = generator.run()
+    ancestor_data, anc_df = generator.run()
     for timestamp, record in sample_data.provenances():
         ancestor_data.add_provenance(timestamp, record)
     if record_provenance:
         ancestor_data.record_provenance("generate_ancestors")
     ancestor_data.finalise()
-    return ancestor_data
-
+    if log_anc == True:
+        return ancestor_data, anc_df
+    else:
+        return ancestor_data
 
 def match_ancestors(
     sample_data,
@@ -1285,7 +1292,7 @@ def insert_missing_sites(
 ):
     """
     Return a new tree sequence containing extra sites that are present in a
-    :class:`SampleData` instance but are missing from a corresponding tree sequence.
+    :class:`SampleData` instance but are missing from a corresponding tree sequence.    
     At each newly inserted site, mutations are overlaid parsimoneously, using
     :meth:`tskit.Tree.map_mutations`,
     such that the realised variation at that site corresponds to the allelic
@@ -1422,8 +1429,9 @@ class AncestorsGenerator:
         genotype_encoding=constants.GenotypeEncoding.EIGHT_BIT,
         mmap_temp_dir=None,
         progress_monitor=None,
-        
-
+        log_anc=None,
+        freq_threshold=1,
+        one_site_per_anc=False,   
     ):
         self.sample_data = sample_data
         self.ancestor_data_path = ancestor_data_path
@@ -1443,6 +1451,9 @@ class AncestorsGenerator:
         self.iteration = iteration
         self.sample_frac = sample_frac
         self.sample_func = sample_func
+        self.freq_threshold = freq_threshold
+        self.log_anc = log_anc
+        self.anc_df = pd.DataFrame([])
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1474,7 +1485,7 @@ class AncestorsGenerator:
         elif engine == constants.NUMBA_ENGINE:
             if sample_func is None:
                 sample_frac = self.sample_frac
-                @njit#(int32(int32))
+                @njit
                 def sample_func(sample_set_size):
                     return math.floor(sample_set_size * sample_frac)
                 self.sample_func = sample_func
@@ -1486,6 +1497,8 @@ class AncestorsGenerator:
                 genotype_encoding=genotype_encoding,
                 method='primary',
                 sample_func=sample_func,
+                freq_threshold=freq_threshold,
+                one_site_per_anc=one_site_per_anc,
             )
         elif engine == constants.NUMBA_ALT_ENGINE:
             logger.debug("Using alternative Numba AncestorBuilder implementation")
@@ -1561,79 +1574,57 @@ class AncestorsGenerator:
             logger.info(self.ancestor_builder.print_state(return_str=True))
 
     def _run_synchronous(self, progress):
-        a = np.zeros(self.num_sites, dtype=np.int8)
-
         if self.engine == constants.NUMBA_ENGINE:
-            log_path = self.log_path
-            num_skipped = self.num_skipped
-            if log_path is not None:
-                if not os.path.exists(log_path):
-                    with open(log_path, 'w') as log:
-                        log.write(
-                            '\t'.join(map(str, [
-                                'anc_index',
-                                'duration',
-                                'start',
-                                'end',
-                                'span',
-                                'time',
-                                'num_focal_sites',
-                                'num_sites',
-                                'num_samples',
-                                'engine',
-                                'iteration',
-                                'sample_frac',
-                                'sample_set_size',
-                                'min_sample_set_size',
-                            ])) + '\n'
-                        )
+            sites_position = self.ancestor_data.sites_position[:]
+            sites_position = np.append(sites_position, self.sample_data.sequence_length)
+            anc_list = []
             for index, (t, focal_sites) in enumerate(self.descriptors):
                 before = time_.perf_counter()
-                start, end, sample_set_size = self.ancestor_builder.make_ancestor(focal_sites, a)
+                anc = self.ancestor_builder.make_ancestor(focal_sites)
                 duration = time_.perf_counter() - before
-                logger.debug(
-                    "Made ancestor in {:.2f}s at timepoint {} "
-                    "from {} to {} (len={}) with {} focal sites ({})".format(
-                        duration,
-                        t,
-                        start,
-                        end,
-                        end - start,
-                        len(focal_sites),
-                        focal_sites,
-                    )
-                )
+                if self.log_anc is True:
+                    sample_counts = anc.sample_counts.copy()
+                    focal_pos = sites_position[np.array(focal_sites)]
+                    inferred_pos_left = sites_position[anc.start]
+                    inferred_pos_right = sites_position[anc.end]
+                    inferred_pos_span = inferred_pos_right - inferred_pos_left
+                    anc_list.append({
+                        'inferred_index': index+2,
+                        'perf_duration': duration,
+                        'inferred_site_left': anc.start,
+                        'inferred_site_right': anc.end,
+                        'inferred_site_span': anc.end - anc.start,
+                        'inferred_pos_left': inferred_pos_left,
+                        'inferred_pos_right': inferred_pos_right,
+                        'inferred_pos_span': inferred_pos_span,
+                        'sample_counts': sample_counts,
+                        'min_sample_count': anc.min_sample_count,
+                        'max_sample_count': anc.sample_counts.max(),
+                        'frequency': t,
+                        'num_focal_sites': len(focal_sites),
+                        'focal_site_list': list(focal_sites),
+                        'focal_site_left': focal_sites[0],
+                        'focal_site_right': focal_sites[-1],
+                        'focal_pos_list': list(focal_pos),
+                        'focal_pos_left': focal_pos[0],
+                        'focal_pos_right': focal_pos[-1],
+                        'num_sites': self.num_sites,
+                        'num_samples': self.num_samples,
+                        'iteration': self.iteration,
+                        'sample_frac': self.sample_frac,
+                        'freq_threshold': self.freq_threshold,
+                    })
                 self.ancestor_data.add_ancestor(
-                    start=start,
-                    end=end,
-                    time=t,
+                    start=anc.start,
+                    end=anc.end,
+                    time=t, 
                     focal_sites=focal_sites,
-                    haplotype=a[start:end],
-                    sample_set_size=sample_set_size,
+                    haplotype=anc.haplotype,
                 )
                 progress.update()
-                if log_path is not None:
-                    if (index + num_skipped - 1) % num_skipped == 0:
-                        with open(log_path, 'a') as log:
-                            log.write(
-                                '\t'.join(map(str, [
-                                    index,
-                                    duration,
-                                    start,
-                                    end,
-                                    end - start,
-                                    t,
-                                    len(focal_sites),
-                                    self.num_sites,
-                                    self.num_samples,
-                                    self.engine,
-                                    self.iteration,
-                                    self.sample_frac,
-                                    sample_set_size,
-                                    self.sample_func(sample_set_size),
-                                ])) + '\n'
-                            )
+            self.anc_df = pd.DataFrame(anc_list)
         else:
+            a = np.zeros(self.num_sites, dtype=np.int8)
             for t, focal_sites in self.descriptors:
                 before = time_.perf_counter()
                 start, end = self.ancestor_builder.make_ancestor(focal_sites, a)
@@ -1777,7 +1768,7 @@ class AncestorsGenerator:
                 self.mmap_temp_file.close()
             except:  # noqa
                 pass
-        return self.ancestor_data
+        return self.ancestor_data, self.anc_df
 
 
 @dataclasses.dataclass
@@ -2412,6 +2403,69 @@ class AncestorMatcher(Matcher):
         tables.time_units = self.time_units
         return tables.tree_sequence()
 
+def map_mutations_down(ts, trunc_anc, anc_map):
+    tree = ts.first()
+    sites_position = ts.sites_position
+    trunc_anc_set = set(trunc_anc)
+    site_dict = {}
+    for site, node in anc_map:
+        pos = sites_position[site]
+        tree.seek(pos)
+        stack = list(tree.children(node))
+        new_nodes = []
+        while len(stack) > 0:
+            child = stack.pop()
+            if child in trunc_anc_set:
+                stack.extend(tree.children(child))
+            else:
+                new_nodes.append(child)
+        site_dict[site] = new_nodes
+    return site_dict
+
+def prune_ancestor_ts(anc_ts, anc_df):
+    trunc_anc_df = anc_df[anc_df.min_sample_count == -1]
+    if len(trunc_anc_df) == 0:
+        #nothing to do
+        return anc_ts
+    trunc_anc = trunc_anc_df.inferred_index.values
+    anc_map = []
+    for i, row in trunc_anc_df.iterrows():
+        anc_index = row['inferred_index']
+        focal_sites = list(row['focal_site_list'])
+        for site in focal_sites:
+            anc_map.append((site, anc_index))
+    anc_map = sorted(anc_map)
+    site_dict = map_mutations_down(anc_ts, trunc_anc, anc_map)
+
+    old_tables = anc_ts.dump_tables()
+    trunc_sites = list(site_dict.keys())
+    tables = old_tables.copy()
+    tables.mutations.keep_rows(~np.isin(tables.mutations.site, trunc_sites))
+    assert len(tables.mutations) == len(old_tables.mutations) - len(trunc_sites)
+
+    for site, nodes in site_dict.items():
+        mut_rows = old_tables.mutations[old_tables.mutations.site == site]
+        assert len(mut_rows) == 1
+        mut_row = mut_rows[0]
+        for node in nodes:
+            tables.mutations.append(mut_row.replace(node=node))
+
+    edges_child = tables.edges.child
+    child_is_anc = np.isin(edges_child, trunc_anc)
+    tables.edges.keep_rows(~child_is_anc)
+    logger.debug(f'Removed {np.sum(child_is_anc)} edges with anc as child')
+
+    edges_parent = tables.edges.parent
+    parent_is_anc = np.isin(edges_parent, trunc_anc)
+    logger.debug(f'Changed {np.sum(parent_is_anc)} edges with anc as parent')
+    new_parent = edges_parent
+    new_parent[parent_is_anc] = 1
+    tables.edges.parent = new_parent
+
+    tables.edges.squash()
+    logger.debug(f'{len(new_parent) - len(tables.edges)} edges removed from squashing')
+    tables.sort()
+    return tables.tree_sequence()    
 
 class SampleMatcher(Matcher):
     def __init__(self, sample_data, ancestors_ts, **kwargs):

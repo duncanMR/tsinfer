@@ -1,13 +1,9 @@
-import msprime
 import numpy as np
 import tsinfer
 import collections
 import tskit
 import bisect
-import random
-import colorama
 import pandas as pd
-import math
 from numba import njit
 
 
@@ -131,20 +127,29 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
             haplotype=a[s:e],
         )
 
-def generate_true_and_inferred_ancestors(ts, engine="C", max_frequency=1, sample_frac=0.5, sample_func=None):
+def generate_true_and_inferred_ancestors(
+    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1
+):
     """
     Run a simulation under args and return the samples, plus the true and the inferred
     ancestors
-    """       
+    """
     sample_data = tsinfer.SampleData.from_tree_sequence(ts)
-    inferred_anc = tsinfer.generate_ancestors(sample_data, engine=engine, sample_frac=sample_frac, sample_func=sample_func)
-    #filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
+    inferred_anc, anc_df = tsinfer.generate_ancestors(
+        sample_data,
+        log_anc=True,
+        engine=engine,
+        sample_frac=sample_frac,
+        sample_func=sample_func,
+        freq_threshold=freq_threshold,
+    )
+    # filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
     )
     build_simulated_ancestors(true_anc, ts)
     true_anc.finalise()
-    return sample_data, true_anc, inferred_anc
+    return sample_data, true_anc, inferred_anc, anc_df
 
 
 def ancestor_data_by_pos(anc1, anc2):
@@ -171,9 +176,7 @@ def ancestor_data_by_pos(anc1, anc2):
     }
 
 
-def compare_true_vs_inferred_anc(
-    sample_data, true_anc, inferred_anc, sample_frac=-1, sample_func=None,
-):
+def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df):
     """
     Calculate quality measures per focal site, as these are comparable from inferred
     to true ancestors. This is a bit complicated because we don't always have the same
@@ -182,11 +185,6 @@ def compare_true_vs_inferred_anc(
     so that we only look at the regions of overlap between true and inferred ancestors
     """
     
-    if sample_func is None:
-        @njit
-        def sample_func(sample_set_size):
-            return math.floor(sample_set_size * sample_frac)
-
     anc_indices = ancestor_data_by_pos(true_anc, inferred_anc)
     shared_positions = np.array(list(sorted(anc_indices.keys())))
     # append sequence_length to pos so that ancestors_end[:] indices are always valid
@@ -209,21 +207,18 @@ def compare_true_vs_inferred_anc(
     olap_n_should_be_0_higher_freq = {}
     olap_n_should_be_1_low_eq_freq = {}
     olap_n_should_be_0_low_eq_freq = {}
-    olap_left = {}
-    olap_right = {}
-    true_left = {}
-    true_right = {}
+    olap_site_left = {}
+    olap_site_right = {}
+    olap_pos_left = {}
+    olap_pos_right = {}
+    true_site_left = {}
+    true_site_right = {}
+    true_pos_left = {}
+    true_pos_right = {}
     inferred_node = {}
-    inferred_time = {}
-    inferred_left = {}
-    inferred_right = {}
-    true_len = {}
-    est_len = {}
+    true_pos_span = {}
     true_time = {}
     true_node = {}
-    sample_set_size = {}
-    min_sample_set_size = {}
-    num_allowed_conflicts = {}
     # find the left and right edges of the overlap - iterate by true time in reverse
     for i, focal_pos in enumerate(
         sorted(
@@ -232,9 +227,6 @@ def compare_true_vs_inferred_anc(
         )
     ):
         true_index, inferred_index = anc_indices[focal_pos]
-        anc_sample_set_size = inferred_anc.ancestors_sample_set_size[:][inferred_index]
-        anc_min_sample_set_size = sample_func(anc_sample_set_size)
-        anc_num_allowed_conflicts = anc_sample_set_size - anc_min_sample_set_size
         # left (start) is biggest of exact and estim
         true_start = true_positions[true_anc.ancestors_start[:][true_index]]
         inferred_start = inferred_positions[
@@ -263,8 +255,8 @@ def compare_true_vs_inferred_anc(
             olap_end = inferred_positions[olap_end_estim]
             olap_end_exact = np.searchsorted(true_anc.sites_position[:], olap_end)
 
-        offset1 = true_anc.ancestors_start[:][true_index]
-        offset2 = inferred_anc.ancestors_start[:][inferred_index]
+        # offset1 = true_anc.ancestors_start[:][true_index]
+        # offset2 = inferred_anc.ancestors_start[:][inferred_index]
 
         true_full_hap = true_anc.ancestors_full_haplotype[:, true_index, 0]
         # slice the full haplotype to include only the overlapping region
@@ -285,29 +277,33 @@ def compare_true_vs_inferred_anc(
         should_be_0 = inferred_comp & ~true_comp
 
         assert np.sum(should_be_1 | should_be_0) == np.sum(bad_sites)
-        sample_set_size[focal_pos] = anc_sample_set_size
-        min_sample_set_size[focal_pos] = anc_min_sample_set_size
-        num_allowed_conflicts[focal_pos] = anc_num_allowed_conflicts
         olap_n_sites[focal_pos] = len(true_comp)
-        olap_left[focal_pos] = olap_start
-        olap_right[focal_pos] = olap_end
-        true_left[focal_pos] = true_start
-        true_right[focal_pos] = true_end
-        inferred_left[focal_pos] = inferred_start
-        inferred_right[focal_pos] = inferred_end
+        olap_site_left[focal_pos] = olap_start_estim
+        olap_site_right[focal_pos] = olap_end_estim
+        olap_pos_left[focal_pos] = olap_start
+        olap_pos_right[focal_pos] = olap_end
+        true_site_left[focal_pos] = np.searchsorted(
+            inferred_anc.sites_position[:], true_start
+        )
+        true_site_right[focal_pos] = np.searchsorted(
+            inferred_anc.sites_position[:], true_end
+        )
+        true_pos_left[focal_pos] = true_start
+        true_pos_right[focal_pos] = true_end
+        true_pos_span[focal_pos] = true_anc.ancestors_length[:][true_index]
         inferred_node[focal_pos] = inferred_index
         true_node[focal_pos] = true_index
-        true_len[focal_pos] = true_anc.ancestors_length[:][true_index]
-        est_len[focal_pos] = inferred_anc.ancestors_length[:][inferred_index]
         true_time[focal_pos] = true_anc.ancestors_time[:][true_index]
-        inferred_time[focal_pos] = inferred_anc.ancestors_time[:][inferred_index]
         sites_freq = inferred_freq[olap_start_estim:olap_end_estim]
         higher_freq = sites_freq[small_inferred_mask] > freq[focal_pos]
         olap_n_should_be_1_higher_freq[focal_pos] = np.sum(should_be_1 & higher_freq)
         olap_n_should_be_0_higher_freq[focal_pos] = np.sum(should_be_0 & higher_freq)
         olap_n_should_be_1_low_eq_freq[focal_pos] = np.sum(should_be_1 & ~higher_freq)
         olap_n_should_be_0_low_eq_freq[focal_pos] = np.sum(should_be_0 & ~higher_freq)
-        assert olap_right[focal_pos] - olap_left[focal_pos] <= true_len[focal_pos]
+        assert (
+            olap_pos_right[focal_pos] - olap_pos_left[focal_pos]
+            <= true_pos_span[focal_pos]
+        )
         assert olap_n_should_be_1_higher_freq[
             focal_pos
         ] + olap_n_should_be_0_higher_freq[focal_pos] + olap_n_should_be_1_low_eq_freq[
@@ -322,58 +318,54 @@ def compare_true_vs_inferred_anc(
     df = pd.DataFrame.from_records(
         [
             (
-                p,
                 freq[p],
                 olap_n_sites[p],
-                true_len[p],
-                est_len[p],
-                olap_right[p] - olap_left[p],
-                olap_left[p],
-                olap_right[p],
+                olap_site_left[p],
+                olap_site_right[p],
+                olap_site_right[p] - olap_site_left[p],
+                olap_pos_left[p],
+                olap_pos_right[p],
+                olap_pos_right[p] - olap_pos_left[p],
                 inferred_node[p],
-                inferred_left[p],
-                inferred_right[p],
                 true_node[p],
-                true_left[p],
-                true_right[p],
+                true_site_left[p],
+                true_site_right[p],
+                true_site_right[p] - true_site_left[p],
+                true_pos_left[p],
+                true_pos_right[p],
+                true_pos_span[p],
                 olap_n_should_be_1_higher_freq[p],
                 olap_n_should_be_1_low_eq_freq[p],
                 olap_n_should_be_0_higher_freq[p],
                 olap_n_should_be_0_low_eq_freq[p],
                 t,
                 true_time[p],
-                inferred_time[p],
-                sample_set_size[p],
-                min_sample_set_size[p],
-                num_allowed_conflicts[p],
             )
             for t, p in enumerate(sorted(shared_positions, key=lambda x: true_time[x]))
         ],
         columns=(
-            "focal_site_pos",
             "focal_site_frequency",
             "num_overlapping_sites",
-            "true_length",
-            "inferred_length",
-            "overlap_length",
-            "overlap_left",
-            "overlap_right",
-            "inferred_node",
-            "inferred_left",
-            "inferred_right",
-            "true_node",
-            "true_left",
-            "true_right",
+            "overlap_site_left",
+            "overlap_site_right",
+            "overlap_site_span",
+            "overlap_pos_left",
+            "overlap_pos_right",
+            "overlap_pos_span",
+            "inferred_index",
+            "true_index",
+            "true_site_left",
+            "true_site_right",
+            "true_site_span",
+            "true_pos_left",
+            "true_pos_right",
+            "true_pos_span",
             "err_hifreq_should_be_1",
             "err_lowfreq_should_be_1",
             "err_hifreq_should_be_0",
             "err_lowfreq_should_be_0",
             "true_time_order",
             "true_time",
-            "frequency",
-            "sample_set_size",
-            "min_sample_set_size",
-            "num_allowed_conflicts",
         ),
     )
 
@@ -397,7 +389,12 @@ def compare_true_vs_inferred_anc(
     ) / df.num_mismatches
     df["err_hiF"] = df["err_hifreq_should_be_1"] + df["err_hifreq_should_be_0"]
     df["err_loF"] = df["err_lowfreq_should_be_1"] + df["err_lowfreq_should_be_0"]
-
+    df = df.merge(
+        anc_df,
+        how="left",
+        left_on="inferred_index",
+        right_on="inferred_index",
+    )
     print(
         "{} ancestors, {} with at least one error".format(
             len(df), np.sum(df.num_mismatches != 0)
@@ -413,31 +410,11 @@ def compare_true_vs_inferred_anc(
             ]
         ].sum()
     )
-    inferred_nodes = df.inferred_node.values
-    ancestor_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=8)
-    inferred_ts = tsinfer.match_samples(
-        sample_data, ancestor_ts, num_threads=8, post_process=False
-    )
-    ts = inferred_ts.simplify(filter_nodes=False, keep_unary=True)
-    copied_left, copied_right = extract_copying_data(
-        num_nodes=ts.num_nodes,
-        edges_left=ts.edges_left,
-        edges_right=ts.edges_right,
-        edges_parent=ts.edges_parent,
-        node_subset=inferred_nodes,
-    )
-    # Inferred left starts at first site but edges start at 0
-    copied_left = np.maximum(copied_left, df.inferred_left)
-    copied_length = copied_right - copied_left
-    assert np.all(copied_length >= 0)
-    df["copied_left"] = copied_left
-    df["copied_right"] = copied_right
-    df["copied_length"] = copied_length
-    df['copied_length'] = df['copied_length']
-    df["copied_length_ratio"] = df.copied_length / df.inferred_length
-    df['sample_frac'] = sample_frac
-    #df.drop_duplicates(subset=['true_node', 'inferred_node'], inplace=True)
-
+    
+    print("Running inference to add copied intervals")
+    df, ts = add_copied_intervals(sample_data, inferred_anc, df)
+    df.drop_duplicates(subset=["inferred_index", "true_index"], inplace=True)
+    #df.set_index("inferred_index", inplace=True, drop=False)
     return df, ts
 
 
@@ -455,91 +432,34 @@ def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_
             copied_left[p] = left
         if copied_right[p] < right:
             copied_right[p] = right
-    
+
     return copied_left[node_subset], copied_right[node_subset]
 
 
-def make_ancestors_df(ancestor_data, ts):
-    
-    ts_sites_position = np.append(ts.sites_position, ts.sequence_length)
-    num_ancestors = ancestor_data.num_ancestors
-    ancestor_id = np.arange(num_ancestors)[2:]
-    anc_sites_position = ancestor_data.sites_position[:]
-    anc_sites_position = np.append(anc_sites_position, ts.sequence_length)
-    frequency = ancestor_data.ancestors_time[2:]
-    focal_sites_array = ancestor_data.ancestors_focal_sites[2:]
-    left_focal_pos = np.full(num_ancestors-2, -1)
-    right_focal_pos = np.full(num_ancestors-2, -1)
-    left_focal_site = np.full(num_ancestors-2, -1)
-    right_focal_site = np.full(num_ancestors-2, -1)
-    focal_site_str = np.full(num_ancestors-2, "").astype('object')
-    focal_pos_str = np.full(num_ancestors-2, "").astype('object')
-    for i, focal_sites in enumerate(focal_sites_array):
-        left_focal_site[i] = focal_sites[0]
-        left_focal_pos[i] = anc_sites_position[focal_sites[0]]
-        right_focal_site[i] = focal_sites[-1]
-        right_focal_pos[i] = anc_sites_position[focal_sites[-1]]
-        focal_pos_array = anc_sites_position[focal_sites]
-        focal_pos_str[i] = ",".join(map(str, focal_pos_array))
-        #we need to get the IDs of the sites in the TS not ancestor_data
-        focal_site_mapped = np.searchsorted(ts_sites_position, focal_pos_array)
-        focal_site_str[i] = ",".join(map(str, focal_site_mapped))
-
-    anc_start = ancestor_data.ancestors_start[2:]
-    anc_end = ancestor_data.ancestors_end[2:]
-    inferred_left_pos = anc_sites_position[anc_start]
-    inferred_right_pos = anc_sites_position[anc_end]
-    inferred_length_pos = inferred_right_pos - inferred_left_pos
-    assert np.all(inferred_length_pos >= 0)
-
-    copied_left_pos, copied_right_pos = extract_copying_data(
+def add_copied_intervals(sample_data, inferred_anc, df):
+    ancestor_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=8)
+    inferred_ts = tsinfer.match_samples(sample_data, ancestor_ts, num_threads=8, post_process=False)
+    ts = inferred_ts.simplify(keep_unary=True, filter_nodes=False)
+    sites_position = np.append(ts.sites_position, ts.sequence_length)
+    anc_index = np.array(df.inferred_index)
+    copied_pos_left, copied_pos_right = extract_copying_data(
         num_nodes=ts.num_nodes,
         edges_left=ts.edges_left,
         edges_right=ts.edges_right,
         edges_parent=ts.edges_parent,
-        node_subset=ancestor_id,
+        node_subset=anc_index,
     )
-    assert(len(copied_left_pos) == num_ancestors-2)
+    copied_pos_left[copied_pos_right == 0] = min(sites_position)
+    copied_pos_span = copied_pos_right - copied_pos_left
+    copied_site_left = np.searchsorted(inferred_anc.sites_position, copied_pos_left)
+    copied_site_right = np.searchsorted(inferred_anc.sites_position, copied_pos_right)
+    copied_site_span = copied_site_right - copied_site_left
+    assert np.all(copied_site_span >= 0)
 
-    # Edges starting at 0 actually started from 0th site
-    copied_left_pos[copied_left_pos == 0] = min(ts_sites_position) 
-    copied_length_pos = copied_right_pos - copied_left_pos
-
-    left_focal_site = np.searchsorted(ts_sites_position, left_focal_pos)
-    right_focal_site = np.searchsorted(ts_sites_position, right_focal_pos)
-    inferred_left_site = np.searchsorted(ts_sites_position, inferred_left_pos)
-    inferred_right_site = np.searchsorted(ts_sites_position, inferred_right_pos)
-    inferred_length_site = inferred_right_site - inferred_left_site
-    assert np.all(inferred_length_site >= 0)
-    copied_left_site = np.searchsorted(ts_sites_position, copied_left_pos)
-    copied_right_site = np.searchsorted(ts_sites_position, copied_right_pos)
-    copied_length_site = copied_right_site - copied_left_site
-    assert np.all(copied_length_site >= 0)
-    copied_length_ratio = copied_length_site / inferred_length_site
-
-    data = {
-        'ancestor_id': ancestor_id,
-        'frequency': frequency,
-        'left_focal_pos': left_focal_pos,
-        'right_focal_pos': right_focal_pos,
-        'focal_site_str': focal_site_str,
-        'focal_pos_str': focal_pos_str,
-        'inferred_left_pos': inferred_left_pos,
-        'inferred_right_pos': inferred_right_pos,
-        'inferred_length_pos': inferred_length_pos,
-        'copied_left_pos': copied_left_pos,
-        'copied_right_pos': copied_right_pos,
-        'copied_length_pos': copied_length_pos,
-        'left_focal_site': left_focal_site,
-        'right_focal_site': right_focal_site,
-        'inferred_left_site': inferred_left_site,
-        'inferred_right_site': inferred_right_site,
-        'inferred_length_site': inferred_length_site,
-        'copied_left_site': copied_left_site,
-        'copied_right_site': copied_right_site,
-        'copied_length_site': copied_length_site,
-        'copied_length_ratio': copied_length_ratio
-    }
-
-    ancestors_df = pd.DataFrame(data)
-    return ancestors_df
+    df["copied_pos_left"] = copied_pos_left
+    df["copied_pos_right"] = copied_pos_right
+    df["copied_pos_span"] = copied_pos_span
+    df["copied_site_left"] = copied_site_left
+    df["copied_site_right"] = copied_site_right
+    df["copied_site_span"] = copied_site_span
+    return df, inferred_ts
