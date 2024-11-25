@@ -412,10 +412,13 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df):
     )
     
     print("Running inference to add copied intervals")
-    df, ts = add_copied_intervals(sample_data, inferred_anc, df)
+    anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=8)
+    pruned_anc_ts = tsinfer.prune_ancestor_ts(anc_ts, anc_df)
+    inferred_ts = tsinfer.match_samples(sample_data, pruned_anc_ts, num_threads=8, post_process=False)
+    df = add_copied_intervals(inferred_ts, inferred_anc, df)
     df.drop_duplicates(subset=["inferred_index", "true_index"], inplace=True)
     #df.set_index("inferred_index", inplace=True, drop=False)
-    return df, ts
+    return df, inferred_ts
 
 
 @njit
@@ -436,10 +439,8 @@ def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_
     return copied_left[node_subset], copied_right[node_subset]
 
 
-def add_copied_intervals(sample_data, inferred_anc, df):
-    ancestor_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=8)
-    inferred_ts = tsinfer.match_samples(sample_data, ancestor_ts, num_threads=8, post_process=False)
-    ts = inferred_ts.simplify(keep_unary=True, filter_nodes=False)
+def add_copied_intervals(inferred_ts, inferred_anc, df):
+    ts = inferred_ts.simplify(keep_unary=True,filter_nodes=False)
     sites_position = np.append(ts.sites_position, ts.sequence_length)
     anc_index = np.array(df.inferred_index)
     copied_pos_left, copied_pos_right = extract_copying_data(
@@ -450,6 +451,7 @@ def add_copied_intervals(sample_data, inferred_anc, df):
         node_subset=anc_index,
     )
     copied_pos_left[copied_pos_right == 0] = min(sites_position)
+    copied_pos_right[copied_pos_right == 0] = min(sites_position)
     copied_pos_span = copied_pos_right - copied_pos_left
     copied_site_left = np.searchsorted(inferred_anc.sites_position, copied_pos_left)
     copied_site_right = np.searchsorted(inferred_anc.sites_position, copied_pos_right)
@@ -462,4 +464,4 @@ def add_copied_intervals(sample_data, inferred_anc, df):
     df["copied_site_left"] = copied_site_left
     df["copied_site_right"] = copied_site_right
     df["copied_site_span"] = copied_site_span
-    return df, inferred_ts
+    return df

@@ -511,7 +511,7 @@ def generate_ancestors(
     if record_provenance:
         ancestor_data.record_provenance("generate_ancestors")
     ancestor_data.finalise()
-    if log_anc == True:
+    if log_anc == True or engine==constants.NUMBA_ENGINE:
         return ancestor_data, anc_df
     else:
         return ancestor_data
@@ -1454,6 +1454,7 @@ class AncestorsGenerator:
         self.freq_threshold = freq_threshold
         self.log_anc = log_anc
         self.anc_df = pd.DataFrame([])
+        self.one_site_per_anc = one_site_per_anc
         mmap_fd = -1
 
         genotype_matrix_size = self.max_sites * self.num_samples
@@ -1613,7 +1614,15 @@ class AncestorsGenerator:
                         'iteration': self.iteration,
                         'sample_frac': self.sample_frac,
                         'freq_threshold': self.freq_threshold,
+                        'one_site_per_anc': self.one_site_per_anc,
                     })
+                else:
+                    anc_list.append({
+                        'inferred_index': index+2,
+                        'min_sample_count': anc.min_sample_count,
+                        'focal_site_list': list(focal_sites),
+                    })
+
                 self.ancestor_data.add_ancestor(
                     start=anc.start,
                     end=anc.end,

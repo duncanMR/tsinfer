@@ -12,43 +12,45 @@ import numpy as np
 from tqdm import tqdm
 
 class TestMatchingPerformance:
-    def __init__(self, sample_data=None, freq_list=[0.8, 1], num_threads=24):
+    def __init__(self, sample_data=None, freq_list=[0.8, 1], num_threads=24, one_site_per_anc=False):
         self.sample_data = sample_data
         self.freq_list = freq_list
         self.data_list = [] 
         self.dataframe = pd.DataFrame()
         self.inferred_ts = {}
         self.num_threads = num_threads
+        self.one_site_per_anc = one_site_per_anc
 
     def run_matching(self):
-        inferred_anc = tsinfer.generate_ancestors(self.sample_data, progress_monitor=True)
-        all_sites = inferred_anc.sites_position[:]
+        #inferred_anc = tsinfer.generate_ancestors(self.sample_data, progress_monitor=True)
+        #all_sites = inferred_anc.sites_position[:]
 
         for i, freq in enumerate(self.freq_list):
             print(f'Inferring ARG with frequency cutoff {freq}')
-            filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=freq)
-            filtered_sites = filtered_anc.sites_position[:]
-            removed_sites = np.setdiff1d(all_sites, filtered_sites)
+            anc, anc_df = tsinfer.generate_ancestors(self.sample_data, engine='N', freq_threshold=freq, one_site_per_anc=self.one_site_per_anc, log_anc=False)
+            #filtered_sites = filtered_anc.sites_position[:]
+            #removed_sites = np.setdiff1d(all_sites, filtered_sites)
             
-
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
-            ancestor_ts = tsinfer.match_ancestors(
-                self.sample_data, filtered_anc, progress_monitor=True, num_threads=self.num_threads)
+            anc_ts = tsinfer.match_ancestors(
+                self.sample_data, anc, progress_monitor=True, num_threads=self.num_threads)
             ancestor_wall_time = time_.perf_counter() - before_wall
             ancestor_cpu_time = time_.process_time() - before_cpu
+            if freq < 1:
+                anc_ts = tsinfer.prune_ancestor_ts(anc_ts, anc_df)
 
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
             inferred_ts = tsinfer.match_samples(
-                self.sample_data, ancestor_ts, post_process=False, progress_monitor=True, num_threads=self.num_threads)
+                self.sample_data, anc_ts, post_process=False, progress_monitor=True, num_threads=self.num_threads)
             sample_wall_time = time_.perf_counter() - before_wall
             sample_cpu_time = time_.process_time() - before_cpu
-            inferred_ts = tsinfer.post_process(inferred_ts)
+            #inferred_ts = tsinfer.post_process(inferred_ts)
             self.inferred_ts[freq] = inferred_ts
 
             ancestor_grouping = tsinfer.match_ancestors(
-                self.sample_data, filtered_anc, return_grouping=True)
+                self.sample_data, anc, return_grouping=True)
             ancestors_per_epoch = np.zeros(len(ancestor_grouping) + 1)
             for index, ancestors in ancestor_grouping.items():
                 ancestors_per_epoch[index] = len(ancestors)

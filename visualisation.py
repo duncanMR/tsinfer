@@ -36,7 +36,7 @@ color_dict = {
 
 
 def plot_ancestor_segments(
-    df, ax, rect_height=0.4, gap=0, lw=1, title="Ancestor comparison", type="site"
+    df, ax, rect_height=0.4, gap=0, lw=1, title="Ancestor comparison", type="site", sim=True
 ):
     if type not in ["site", "pos"]:
         raise ValueError("type must be 'site' or 'pos'")
@@ -46,59 +46,81 @@ def plot_ancestor_segments(
     for y, (_, row) in enumerate(df.iterrows()):
         copied_left = row[f"copied_{type}_left"]
         copied_right = row[f"copied_{type}_right"]
+        copied_span = row[f"copied_{type}_span"]
         inferred_left = row[f"inferred_{type}_left"]
         inferred_right = row[f"inferred_{type}_right"]
-        true_left = row[f"true_{type}_left"]
-        true_right = row[f"true_{type}_right"]
-        # Inferred/copied above
-        ax.add_patch(
-            Rectangle(
-                (inferred_left, y + gap / 2),
-                copied_left - inferred_left,
-                rect_height,
-                color=color_dict["inferred"],
-                label="Inferred" if y == 0 else "",
+
+        # Adjust rectangle height for non-sim case
+        current_rect_height = rect_height if sim else rect_height * 2
+
+        if copied_span == 0:
+            # No copied segment
+            ax.add_patch(
+                Rectangle(
+                    (inferred_left, y + gap / 2),
+                    inferred_right - inferred_left,
+                    current_rect_height,
+                    color=color_dict["inferred"],
+                    label="Inferred" if y == 0 else "",
+                )
             )
-        )
-        ax.add_patch(
-            Rectangle(
-                (copied_left, y + gap / 2),
-                copied_right - copied_left,
-                rect_height,
-                color=color_dict["copied"],
-                label="Copied" if y == 0 else "",
+        else:
+            ax.add_patch(
+                Rectangle(
+                    (inferred_left, y + gap / 2),
+                    copied_left - inferred_left,
+                    current_rect_height,
+                    color=color_dict["inferred"],
+                    label="Inferred" if y == 0 else "",
+                )
             )
-        )
-        ax.add_patch(
-            Rectangle(
-                (copied_right, y + gap / 2),
-                inferred_right - copied_right,
-                rect_height,
-                color=color_dict["inferred"],
+            ax.add_patch(
+                Rectangle(
+                    (copied_left, y + gap / 2),
+                    copied_right - copied_left,
+                    current_rect_height,
+                    color=color_dict["copied"],
+                    label="Copied" if y == 0 else "",
+                )
             )
-        )
-        # True segment below
-        ax.add_patch(
-            Rectangle(
-                (true_left, y - rect_height - gap / 2),
-                true_right - true_left,
-                rect_height,
-                color=color_dict["true"],
-                label="True" if y == 0 else "",
+            ax.add_patch(
+                Rectangle(
+                    (copied_right, y + gap / 2),
+                    inferred_right - copied_right,
+                    current_rect_height,
+                    color=color_dict["inferred"],
+                )
             )
-        )
+
+        if sim is True:
+            # True segment below
+            true_left = row[f"true_{type}_left"]
+            true_right = row[f"true_{type}_right"]
+            ax.add_patch(
+                Rectangle(
+                    (true_left, y - rect_height - gap / 2),
+                    true_right - true_left,
+                    rect_height,
+                    color=color_dict["true"],
+                    label="True" if y == 0 else "",
+                )
+            )
 
         # Plot focal sites as vertical lines
         focal_list = np.array(row[f"focal_{type}_list"])
         for focal in focal_list:
-            focal_pos = float(focal)
-            ax.vlines(
-                focal, y - rect_height, y + rect_height + gap, color="black", lw=lw
-            )
+            if sim is True:
+                ax.vlines(
+                    focal, y - rect_height, y + rect_height + gap, color="black", lw=lw
+                )
+            else:
+                ax.vlines(
+                    focal, y - gap, y + current_rect_height, color="black", lw=lw
+                )
 
         # Add a faint gray line to separate pairs of rectangles
         ax.hlines(
-            y + rect_height + 0.1,
+            y + current_rect_height + 0.1,
             xmin=df[f"inferred_{type}_left"].min() - 1e6,
             xmax=df[f"inferred_{type}_right"].max() + 1e6,
             color="gray",
@@ -123,7 +145,14 @@ def plot_ancestor_segments(
     legend_elements = [
         Rectangle((0, 0), 1, 1, color=color_dict["inferred"], label="Inferred"),
         Rectangle((0, 0), 1, 1, color=color_dict["copied"], label="Copied"),
-        Rectangle((0, 0), 1, 1, color=color_dict["true"], label="True"),
+    ]
+
+    if sim:
+        legend_elements.append(
+            Rectangle((0, 0), 1, 1, color=color_dict["true"], label="True")
+        )
+
+    legend_elements.append(
         Line2D(
             [0],
             [0],
@@ -132,8 +161,8 @@ def plot_ancestor_segments(
             linestyle="None",
             markersize=15,
             label="Focal site",
-        ),
-    ]
+        )
+    )
     ax.legend(handles=legend_elements, loc="upper right")  # Legend inside the plot
 
 
@@ -155,7 +184,7 @@ def plot_sample_sets(df, ax):
     ax.grid(False)
 
 
-def create_ancestor_segments_plotter(df, type="site"):
+def plot_ancestor_segments_interactive(df, type="site", sim=True):
     # Get the unique sample_frac values
     sample_frac_list = sorted(df["sample_frac"].unique())
     sample_frac_index = 0  # Start at the first sample_frac value
@@ -268,7 +297,7 @@ def create_ancestor_segments_plotter(df, type="site"):
                 )  # , gridspec_kw={'width_ratios': [4, 1]})
 
                 # Plot segments
-                plot_ancestor_segments(df_plot, ax_segments, title=title, type=type)
+                plot_ancestor_segments(df_plot, ax_segments, title=title, type=type, sim=sim)
 
                 plt.tight_layout()
                 plt.show()
@@ -377,7 +406,7 @@ def make_mut_labels(ts, sites_pos):
     return mut_labels
 
 
-def tree_comparison(
+def compare_trees(
     ts_1,
     ts_2,
     sites_pos,
