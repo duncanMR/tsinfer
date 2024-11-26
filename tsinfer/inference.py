@@ -1617,6 +1617,7 @@ class AncestorsGenerator:
                         'one_site_per_anc': self.one_site_per_anc,
                     })
                 else:
+                    focal_pos = sites_position[np.array(focal_sites)]
                     anc_list.append({
                         'inferred_index': index+2,
                         'min_sample_count': anc.min_sample_count,

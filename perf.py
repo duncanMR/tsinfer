@@ -16,38 +16,45 @@ class TestMatchingPerformance:
         self.sample_data = sample_data
         self.freq_list = freq_list
         self.data_list = [] 
-        self.dataframe = pd.DataFrame()
-        self.inferred_ts = {}
+        self.perf_dataframe = pd.DataFrame()
+        self.anc_dataframe = pd.DataFrame()
+        self.inferred_ts_dict = {}
+        self.anc_ts_dict = {}
         self.num_threads = num_threads
         self.one_site_per_anc = one_site_per_anc
 
     def run_matching(self):
-        #inferred_anc = tsinfer.generate_ancestors(self.sample_data, progress_monitor=True)
-        #all_sites = inferred_anc.sites_position[:]
-
         for i, freq in enumerate(self.freq_list):
             print(f'Inferring ARG with frequency cutoff {freq}')
-            anc, anc_df = tsinfer.generate_ancestors(self.sample_data, engine='N', freq_threshold=freq, one_site_per_anc=self.one_site_per_anc, log_anc=False)
-            #filtered_sites = filtered_anc.sites_position[:]
-            #removed_sites = np.setdiff1d(all_sites, filtered_sites)
-            
+            anc, anc_df = tsinfer.generate_ancestors(
+                self.sample_data, engine='N', freq_threshold=freq,
+                one_site_per_anc=self.one_site_per_anc, log_anc=False
+            )
+            anc_df['frequency'] = freq
+            self.anc_dataframe = pd.concat([self.anc_dataframe, anc_df], ignore_index=True)
+
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
             anc_ts = tsinfer.match_ancestors(
-                self.sample_data, anc, progress_monitor=True, num_threads=self.num_threads)
+                self.sample_data, anc, progress_monitor=True,
+                num_threads=self.num_threads, path_compression=False
+            )
             ancestor_wall_time = time_.perf_counter() - before_wall
             ancestor_cpu_time = time_.process_time() - before_cpu
+            self.anc_ts_dict[freq] = anc_ts
+
             if freq < 1:
                 anc_ts = tsinfer.prune_ancestor_ts(anc_ts, anc_df)
 
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
             inferred_ts = tsinfer.match_samples(
-                self.sample_data, anc_ts, post_process=False, progress_monitor=True, num_threads=self.num_threads)
+                self.sample_data, anc_ts, post_process=False,
+                progress_monitor=True, num_threads=self.num_threads, path_compression=False
+            )
             sample_wall_time = time_.perf_counter() - before_wall
             sample_cpu_time = time_.process_time() - before_cpu
-            #inferred_ts = tsinfer.post_process(inferred_ts)
-            self.inferred_ts[freq] = inferred_ts
+            self.inferred_ts_dict[freq] = inferred_ts
 
             ancestor_grouping = tsinfer.match_ancestors(
                 self.sample_data, anc, return_grouping=True)
@@ -67,36 +74,53 @@ class TestMatchingPerformance:
             }
             self.data_list.append(data_row)
 
-        self.dataframe = pd.DataFrame(self.data_list)
+        self.perf_dataframe = pd.DataFrame(self.data_list)
 
     def dump(self, output_folder, prefix):
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
 
-        csv_path = os.path.join(output_folder, f"{prefix}_df.csv")
-        self.dataframe.to_csv(csv_path, index=False)
+        perf_csv_path = os.path.join(output_folder, f"{prefix}_perf_df.csv")
+        self.perf_dataframe.to_csv(perf_csv_path, index=False)
 
-        for freq, ts in self.inferred_ts.items():
+        anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
+        self.anc_dataframe.to_csv(anc_csv_path, index=False)
+
+        for freq, ts in self.inferred_ts_dict.items():
             formatted_freq = f"{freq:.1f}"
             ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
             tszip.compress(ts, ts_path)
+
+        for freq, ts in self.anc_ts_dict.items():
+            formatted_freq = f"{freq:.1f}"
+            ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}_anc.tsz")
+            tszip.compress(ts, ts_path)
+
         print(f"Data saved to {output_folder} with prefix '{prefix}'")
 
     def load(self, output_folder, prefix):
-        csv_path = os.path.join(output_folder, f"{prefix}_df.csv")
-        self.dataframe = pd.read_csv(csv_path)
-        self.freq_list = self.dataframe['frequency'].tolist()
+        perf_csv_path = os.path.join(output_folder, f"{prefix}_perf_df.csv")
+        self.perf_dataframe = pd.read_csv(perf_csv_path)
+        self.freq_list = self.perf_dataframe['frequency'].tolist()
 
-        self.inferred_ts = {}
+        anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
+        self.anc_dataframe = pd.read_csv(anc_csv_path)
+
+        self.inferred_ts_dict = {}
+        self.anc_ts_dict = {}
         for freq in self.freq_list:
             formatted_freq = f"{freq:.1f}"
             print(f"Loading tree sequence for frequency {formatted_freq}")
             ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
+            anc_ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}_anc.tsz")
             if os.path.exists(ts_path):
-                self.inferred_ts[freq] = tszip.decompress(ts_path)
+                self.inferred_ts_dict[freq] = tszip.decompress(ts_path)
+            if os.path.exists(anc_ts_path):
+                self.anc_ts_dict[freq] = tszip.decompress(anc_ts_path)
+
 
     def visualise(self, title=None):
-        freqs = self.dataframe['frequency'].tolist()
+        freqs = self.perf_dataframe['frequency'].tolist()
         colors = plt.colormaps.get_cmap('tab10').colors[:len(freqs)]
 
         fig = plt.figure(figsize=(15, 8))
@@ -104,7 +128,7 @@ class TestMatchingPerformance:
         gs = fig.add_gridspec(2, 4, height_ratios=[1, 2])
 
         ax1 = fig.add_subplot(gs[0, 0])
-        ax1.bar(range(len(freqs)), self.dataframe['ancestor_match_walltime'],
+        ax1.bar(range(len(freqs)), self.perf_dataframe['ancestor_match_walltime'],
                 color=colors, width=0.35)
         ax1.set_xlabel('Frequency cutoff')
         ax1.set_ylabel('Wall time (seconds)')
@@ -113,7 +137,7 @@ class TestMatchingPerformance:
         ax1.set_xticklabels(freqs)
 
         ax2 = fig.add_subplot(gs[0, 1])
-        ax2.bar(range(len(freqs)), self.dataframe['sample_match_walltime'],
+        ax2.bar(range(len(freqs)), self.perf_dataframe['sample_match_walltime'],
                 color=colors, width=0.35)
         ax2.set_xlabel('Frequency cutoff')
         ax2.set_ylabel('Wall time (seconds)')
@@ -122,7 +146,7 @@ class TestMatchingPerformance:
         ax2.set_xticklabels(freqs)
 
         ax3 = fig.add_subplot(gs[0, 2])
-        ax3.bar(range(len(freqs)), self.dataframe['ancestor_match_cputime'],
+        ax3.bar(range(len(freqs)), self.perf_dataframe['ancestor_match_cputime'],
                 color=colors, width=0.35)
         ax3.set_xlabel('Frequency cutoff')
         ax3.set_ylabel('CPU time (seconds)')
@@ -131,7 +155,7 @@ class TestMatchingPerformance:
         ax3.set_xticklabels(freqs)
 
         ax4 = fig.add_subplot(gs[0, 3])
-        ax4.bar(range(len(freqs)), self.dataframe['sample_match_cputime'],
+        ax4.bar(range(len(freqs)), self.perf_dataframe['sample_match_cputime'],
                 color=colors, width=0.35)
         ax4.set_xlabel('Frequency cutoff')
         ax4.set_ylabel('CPU time (seconds)')
@@ -141,8 +165,8 @@ class TestMatchingPerformance:
 
         ax5 = fig.add_subplot(gs[1, :])
         for i, freq in enumerate(freqs):
-            ancestors_per_epoch_str = self.dataframe.loc[
-                self.dataframe['frequency'] == freq, 'ancestors_per_epoch'].iloc[0]
+            ancestors_per_epoch_str = self.perf_dataframe.loc[
+                self.perf_dataframe['frequency'] == freq, 'ancestors_per_epoch'].iloc[0]
             ancestors_per_epoch = np.array(eval(ancestors_per_epoch_str))
             ax5.scatter(range(len(ancestors_per_epoch)), ancestors_per_epoch,
                         color=colors[i], label=f'{freq}', s=20, alpha=0.3)

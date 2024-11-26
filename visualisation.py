@@ -5,7 +5,7 @@ Visualisation of the copying process and ancestor generation using PIL
 import os
 import sys
 import tempfile
-
+import ast
 import msprime
 import numpy as np
 import pandas as pd
@@ -42,7 +42,7 @@ def plot_ancestor_segments(
         raise ValueError("type must be 'site' or 'pos'")
     df = df.copy()
     df.sort_values("inferred_index", inplace=True, ascending=False)
-
+    assert len(df) > 0
     for y, (_, row) in enumerate(df.iterrows()):
         copied_left = row[f"copied_{type}_left"]
         copied_right = row[f"copied_{type}_right"]
@@ -105,9 +105,10 @@ def plot_ancestor_segments(
                     label="True" if y == 0 else "",
                 )
             )
-
+    
         # Plot focal sites as vertical lines
-        focal_list = np.array(row[f"focal_{type}_list"])
+        focal_list = np.array(ast.literal_eval(row[f"focal_{type}_list"]))
+        assert len(focal_list) > 0
         for focal in focal_list:
             if sim is True:
                 ax.vlines(
@@ -295,7 +296,7 @@ def plot_ancestor_segments_interactive(df, type="site", sim=True):
                 fig, ax_segments = plt.subplots(
                     figsize=(20, 7)
                 )  # , gridspec_kw={'width_ratios': [4, 1]})
-
+                assert len(df_plot) > 0
                 # Plot segments
                 plot_ancestor_segments(df_plot, ax_segments, title=title, type=type, sim=sim)
 
