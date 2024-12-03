@@ -40,6 +40,7 @@ import pandas as pd
 import humanize
 import numpy as np
 import tskit
+import ast
 
 import _tsinfer
 import tsinfer.algorithm as algorithm
@@ -511,7 +512,7 @@ def generate_ancestors(
     if record_provenance:
         ancestor_data.record_provenance("generate_ancestors")
     ancestor_data.finalise()
-    if log_anc == True or engine==constants.NUMBA_ENGINE:
+    if log_anc == True:
         return ancestor_data, anc_df
     else:
         return ancestor_data
@@ -1616,20 +1617,13 @@ class AncestorsGenerator:
                         'freq_threshold': self.freq_threshold,
                         'one_site_per_anc': self.one_site_per_anc,
                     })
-                else:
-                    focal_pos = sites_position[np.array(focal_sites)]
-                    anc_list.append({
-                        'inferred_index': index+2,
-                        'min_sample_count': anc.min_sample_count,
-                        'focal_site_list': list(focal_sites),
-                    })
-
                 self.ancestor_data.add_ancestor(
                     start=anc.start,
                     end=anc.end,
                     time=t, 
                     focal_sites=focal_sites,
                     haplotype=anc.haplotype,
+                    min_sample_count=anc.min_sample_count,
                 )
                 progress.update()
             self.anc_df = pd.DataFrame(anc_list)
@@ -2432,18 +2426,14 @@ def map_mutations_down(ts, trunc_anc, anc_map):
         site_dict[site] = new_nodes
     return site_dict
 
-def prune_ancestor_ts(anc_ts, anc_df):
-    trunc_anc_df = anc_df[anc_df.min_sample_count == -1]
-    if len(trunc_anc_df) == 0:
-        #nothing to do
-        return anc_ts
-    trunc_anc = trunc_anc_df.inferred_index.values
+def extend_ancestor_ts(anc_ts, inferred_anc):
     anc_map = []
-    for i, row in trunc_anc_df.iterrows():
-        anc_index = row['inferred_index']
-        focal_sites = list(row['focal_site_list'])
-        for site in focal_sites:
-            anc_map.append((site, anc_index))
+    trunc_anc = []
+    for i, anc in enumerate(inferred_anc.ancestors()):
+        if anc.min_sample_count == constants.ANC_SHORTENED:
+            trunc_anc.append(i)
+            for site in anc.focal_sites:
+                anc_map.append((site, i))
     anc_map = sorted(anc_map)
     site_dict = map_mutations_down(anc_ts, trunc_anc, anc_map)
 

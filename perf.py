@@ -12,26 +12,32 @@ import numpy as np
 from tqdm import tqdm
 
 class TestMatchingPerformance:
-    def __init__(self, sample_data=None, freq_list=[0.8, 1], num_threads=24, one_site_per_anc=False):
+    def __init__(self, output_folder, prefix, sample_data=None, freq_list=[0.8, 1], num_threads=24, one_site_per_anc=False):
         self.sample_data = sample_data
         self.freq_list = freq_list
         self.data_list = [] 
         self.perf_dataframe = pd.DataFrame()
-        self.anc_dataframe = pd.DataFrame()
+        #self.anc_dataframe = pd.DataFrame()
         self.inferred_ts_dict = {}
         self.anc_ts_dict = {}
         self.num_threads = num_threads
         self.one_site_per_anc = one_site_per_anc
+        self.output_folder = output_folder
+        self.prefix = prefix
+        
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
 
     def run_matching(self):
         for i, freq in enumerate(self.freq_list):
             print(f'Inferring ARG with frequency cutoff {freq}')
-            anc, anc_df = tsinfer.generate_ancestors(
+            anc = tsinfer.generate_ancestors(
                 self.sample_data, engine='N', freq_threshold=freq,
-                one_site_per_anc=self.one_site_per_anc, log_anc=False
+                one_site_per_anc=self.one_site_per_anc, log_anc=False,
+                path=os.path.join(self.output_folder, f"{self.prefix}_{freq:.1f}_ancestors.zarr")
             )
-            anc_df['frequency'] = freq
-            self.anc_dataframe = pd.concat([self.anc_dataframe, anc_df], ignore_index=True)
+            #anc_df['frequency'] = freq
+            #self.anc_dataframe = pd.concat([self.anc_dataframe, anc_df], ignore_index=True)
 
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
@@ -44,7 +50,7 @@ class TestMatchingPerformance:
             self.anc_ts_dict[freq] = anc_ts
 
             if freq < 1:
-                anc_ts = tsinfer.prune_ancestor_ts(anc_ts, anc_df)
+                anc_ts = tsinfer.extend_ancestor_ts(anc_ts, anc)
 
             before_wall = time_.perf_counter()
             before_cpu = time_.process_time()
@@ -76,18 +82,18 @@ class TestMatchingPerformance:
 
         self.perf_dataframe = pd.DataFrame(self.data_list)
 
-    def dump(self, output_folder, prefix):
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+    def dump(self):
+        output_folder = self.output_folder
+        prefix = self.prefix
+        
 
         perf_csv_path = os.path.join(output_folder, f"{prefix}_perf_df.csv")
         self.perf_dataframe.to_csv(perf_csv_path, index=False)
 
-        anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
-        self.anc_dataframe.to_csv(anc_csv_path, index=False)
+        #anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
+        #self.anc_dataframe.to_csv(anc_csv_path, index=False)
 
         for freq, ts in self.inferred_ts_dict.items():
-            formatted_freq = f"{freq:.1f}"
             ts_path = os.path.join(output_folder, f"{prefix}_{formatted_freq}.tsz")
             tszip.compress(ts, ts_path)
 
@@ -103,8 +109,8 @@ class TestMatchingPerformance:
         self.perf_dataframe = pd.read_csv(perf_csv_path)
         self.freq_list = self.perf_dataframe['frequency'].tolist()
 
-        anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
-        self.anc_dataframe = pd.read_csv(anc_csv_path)
+        #anc_csv_path = os.path.join(output_folder, f"{prefix}_anc_df.csv")
+        #self.anc_dataframe = pd.read_csv(anc_csv_path)
 
         self.inferred_ts_dict = {}
         self.anc_ts_dict = {}

@@ -107,7 +107,7 @@ def plot_ancestor_segments(
             )
     
         # Plot focal sites as vertical lines
-        focal_list = np.array(ast.literal_eval(row[f"focal_{type}_list"]))
+        focal_list = row[f"focal_{type}_list"]
         assert len(focal_list) > 0
         for focal in focal_list:
             if sim is True:
@@ -536,18 +536,38 @@ def compare_trees(
 
 
 def plot_ancestor_boxplot(
-    df, cutoffs, var_dict, var_labels, title, y_units="bp", y_log=False, save_path=None
+    df, cutoffs=None, var='span', type='site', title='Ancestor lengths', y_log=False, save_path=None
 ):
     df = df.copy()  # To avoid SettingWithCopyWarning
+    if cutoffs is None:
+        cutoffs = np.unique(np.percentile(df['frequency'], np.linspace(0, 100, 9)))
+
+    if type == 'site':
+        y_units = 'sites'
+    elif type == 'pos':
+        y_units = 'bp'
+    else:
+        raise ValueError("type must be 'site' or 'pos'")
+    
+    if var == 'span':
+        if 'true_site_span' in df.columns:
+            vars=[f'true_{type}_span', f'inferred_{type}_span', f'copied_{type}_span']
+            var_labels = ['True (as simulated)', 'Inferred', 'Copied from']
+            colors=[color_dict['true'], color_dict['inferred'], color_dict['copied']]
+        else:
+            vars=[f'inferred_{type}_span', f'copied_{type}_span']
+            var_labels = ['Inferred', 'Copied from']
+            colors=[color_dict['inferred'], color_dict['copied']]
+    elif var == 'overlap_ratio':
+        vars=['inferred_overlap_ratio', 'true_overlap_ratio']
+        var_labels = ['Inferred overlap ratio', 'True overlap ratio']
+        colors=[color_dict['inferred'], color_dict['true']]
+    
+
     df["frequency_bin"] = pd.cut(df["frequency"], bins=cutoffs, include_lowest=True)
     df["frequency_bin"] = df["frequency_bin"].apply(
         lambda x: f"({x.left:.2f}, {x.right:.2f}]"
     )
-
-    # Extract variables and corresponding colors from var_dict
-    vars = list(var_dict.keys())
-    colors = list(var_dict.values())
-
     # Create a mapping from variable names to their formatted labels
     var_label_mapping = dict(zip(vars, var_labels))
 

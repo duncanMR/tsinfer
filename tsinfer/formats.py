@@ -2880,6 +2880,7 @@ class Ancestor:
     time = attr.ib()
     focal_sites = attr.ib()
     full_haplotype = attr.ib()
+    min_sample_count = attr.ib(default=0)
 
     @property
     def haplotype(self):
@@ -2956,7 +2957,7 @@ class AncestorData(DataContainer):
         self.create_dataset("sample_end", dtype=np.int32)
         self.create_dataset("sample_time", dtype=np.float64)
         self.create_dataset("sample_focal_sites", dtype="array:i4")
-
+        self.create_dataset("min_sample_count", dtype="i4")
         self.create_dataset(
             "variant_position",
             data=position,
@@ -3029,6 +3030,7 @@ class AncestorData(DataContainer):
                 "focal_sites": self.ancestors_focal_sites,
                 "full_haplotype": self.ancestors_full_haplotype,
                 "full_haplotype_mask": self.ancestors_full_haplotype_mask,
+                "min_sample_count": self.ancestors_min_sample_count,
             },
             num_threads=self._num_flush_threads,
         )
@@ -3049,6 +3051,7 @@ class AncestorData(DataContainer):
             ("sample_time", zarr_summary(self.ancestors_time)),
             ("sample_focal_sites", zarr_summary(self.ancestors_focal_sites)),
             ("call_genotype", zarr_summary(self.ancestors_full_haplotype)),
+            ("min_sample_count", zarr_summary(self.ancestors_min_sample_count)),
         ]
         return super().__str__() + self._format_str(values)
 
@@ -3151,6 +3154,10 @@ class AncestorData(DataContainer):
     def ancestors_full_haplotype_mask(self):
         # Only required for sgkit compatibility
         return self.data["call_genotype_mask"]
+    
+    @property
+    def ancestors_min_sample_count(self):
+        return self.data["min_sample_count"]
 
     @property
     def ancestors_length(self):
@@ -3564,7 +3571,7 @@ class AncestorData(DataContainer):
     # Write mode (building and editing)
     ####################################
 
-    def add_ancestor(self, start, end, time, focal_sites, haplotype):
+    def add_ancestor(self, start, end, time, focal_sites, haplotype, min_sample_count=0):
         """
         Adds an ancestor with the specified haplotype, with ancestral material over the
         interval [start:end], that is associated with the specified timepoint and has new
@@ -3597,6 +3604,7 @@ class AncestorData(DataContainer):
             time=time,
             focal_sites=focal_sites,
             haplotype=haplotype,
+            min_sample_count=min_sample_count,
         )
 
     def finalise(self):
@@ -3647,6 +3655,7 @@ class AncestorData(DataContainer):
             time=self.ancestors_time[id_],
             focal_sites=self.ancestors_focal_sites[id_],
             full_haplotype=self.ancestors_full_haplotype[:, id_, 0],
+            min_sample_count=self.ancestors_min_sample_count[id_],
         )
 
     def ancestors(self, indexes=None):
@@ -3660,6 +3669,7 @@ class AncestorData(DataContainer):
         time = self.ancestors_time[:]
         focal_sites = self.ancestors_focal_sites[:]
         haplotypes = chunk_iterator(self.ancestors_full_haplotype, indexes, dimension=1)
+        min_sample_count = self.ancestors_min_sample_count[:]
         if indexes is None:
             indexes = range(len(time))
         for j, h in zip(indexes, haplotypes):
@@ -3671,6 +3681,7 @@ class AncestorData(DataContainer):
                 focal_sites=focal_sites[j],
                 # [0] to remove ploidy dimension
                 full_haplotype=h[:, 0],
+                min_sample_count=min_sample_count[j],
             )
 
 

@@ -143,7 +143,6 @@ def generate_true_and_inferred_ancestors(
         sample_func=sample_func,
         freq_threshold=freq_threshold,
     )
-    # filtered_anc = inferred_anc.filter_old_ancestors(max_frequency=max_frequency)
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
     )
@@ -176,7 +175,7 @@ def ancestor_data_by_pos(anc1, anc2):
     }
 
 
-def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df):
+def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=10):
     """
     Calculate quality measures per focal site, as these are comparable from inferred
     to true ancestors. This is a bit complicated because we don't always have the same
@@ -412,14 +411,25 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df):
     )
     
     print("Running inference to add copied intervals")
-    anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=8)
-    pruned_anc_ts = tsinfer.prune_ancestor_ts(anc_ts, anc_df)
-    inferred_ts = tsinfer.match_samples(sample_data, pruned_anc_ts, num_threads=8, post_process=False)
+    anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=num_threads)
+    extended_anc_ts = tsinfer.extend_ancestor_ts(anc_ts, inferred_anc)
+    inferred_ts = tsinfer.match_samples(sample_data, extended_anc_ts, num_threads=num_threads, post_process=False)
     df = add_copied_intervals(inferred_ts, inferred_anc, df)
     df.drop_duplicates(subset=["inferred_index", "true_index"], inplace=True)
     #df.set_index("inferred_index", inplace=True, drop=False)
     return df, inferred_ts
 
+def run_anc_evaluation(
+    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1
+):
+    sample_data, true_anc, inferred_anc, anc_df = generate_true_and_inferred_ancestors(
+        ts, engine=engine, sample_frac=sample_frac, sample_func=sample_func, freq_threshold=freq_threshold
+    )
+    print('Comparing true vs inferred ancestors')
+    df, inferred_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df)
+    df['inferred_overlap_ratio'] = df.inferred_site_span / df.overlap_site_span
+    df['true_overlap_ratio'] =  df.true_site_span / df.overlap_site_span
+    return df, inferred_ts
 
 @njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):
