@@ -12,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 
 class TestMatchingPerformance:
-    def __init__(self, output_folder, prefix, sample_data=None, freq_list=[0.8, 1], num_threads=24, one_site_per_anc=False):
+    def __init__(self, output_folder=None, prefix=None, sample_data=None, freq_list=[0.8, 1], num_threads=24, one_site_per_anc=False):
         self.sample_data = sample_data
         self.freq_list = freq_list
         self.data_list = [] 
@@ -31,11 +31,12 @@ class TestMatchingPerformance:
     def run_matching(self):
         for i, freq in enumerate(self.freq_list):
             print(f'Inferring ARG with frequency cutoff {freq}')
-            anc = tsinfer.generate_ancestors(
-                self.sample_data, engine='N', freq_threshold=freq,
-                one_site_per_anc=self.one_site_per_anc, log_anc=False,
-                path=os.path.join(self.output_folder, f"{self.prefix}_{freq:.1f}_ancestors.zarr")
-            )
+            if self.prefix is None:
+                anc = tsinfer.generate_ancestors(
+                    self.sample_data, engine='N', freq_threshold=freq,
+                    one_site_per_anc=self.one_site_per_anc, log_anc=False,
+                    path=os.path.join(self.output_folder, f"{self.prefix}_{freq:.1f}_ancestors.zarr")
+                )
             #anc_df['frequency'] = freq
             #self.anc_dataframe = pd.concat([self.anc_dataframe, anc_df], ignore_index=True)
 

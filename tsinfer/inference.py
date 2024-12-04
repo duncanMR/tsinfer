@@ -2426,7 +2426,7 @@ def map_mutations_down(ts, trunc_anc, anc_map):
         site_dict[site] = new_nodes
     return site_dict
 
-def extend_ancestor_ts(anc_ts, inferred_anc):
+def extend_ancestor_ts(anc_ts, inferred_anc, root_id=1):
     anc_map = []
     trunc_anc = []
     for i, anc in enumerate(inferred_anc.ancestors()):
@@ -2459,7 +2459,7 @@ def extend_ancestor_ts(anc_ts, inferred_anc):
     parent_is_anc = np.isin(edges_parent, trunc_anc)
     logger.debug(f'Changed {np.sum(parent_is_anc)} edges with anc as parent')
     new_parent = edges_parent
-    new_parent[parent_is_anc] = 1
+    new_parent[parent_is_anc] = root_id
     tables.edges.parent = new_parent
 
     tables.edges.squash()
@@ -3027,3 +3027,113 @@ def minimise(ts):
         filter_individuals=False,
         filter_populations=False,
     )
+
+
+class RootPolytomyResolver:
+    def __init__(self, ts, anc_ts):
+        self.ts = ts
+        self.sequence_length = ts.sequence_length
+        self.new_edges = tskit.TableCollection(ts.sequence_length).edges
+        self.new_muts = tskit.TableCollection(ts.sequence_length).mutations
+        self.roots_to_modify = []
+        self.muts_to_remove = []
+        self.next_node_id = ts.num_nodes
+        self.recurrent_counts = np.zeros(anc_ts.num_sites)
+        self.old_nodes_to_new = {}
+        self.old_sites_to_new = {}
+        self.num_root_children = 0
+        self.root = -1
+
+        for site in anc_ts.sites():
+            self.recurrent_counts[site.id] = len(site.mutations)
+        self.recurrent_pos = anc_ts.sites_position[self.recurrent_counts > 1]
+        print(f"{len(self.recurrent_pos)} recurrent sites out of {len(anc_ts.sites())}")
+
+    def infer_root_nj_tree(self, tree):
+        root = tree.root
+        self.root = root
+        interval = tree.interval
+        self.interval = interval
+        children_of_root = tree.children(root)
+        num_root_children = len(children_of_root)
+        self.num_root_children = num_root_children
+        self.roots_to_modify.append(root)
+
+        tables = tskit.TableCollection(self.sequence_length)
+        old_nodes_to_new = {}
+        node_table = tables.nodes
+        for child in children_of_root:
+            old_nodes_to_new[child] = len(node_table)
+            node_table.add_row(time=0, flags=tskit.NODE_IS_SAMPLE)
+        new_root = len(node_table)
+        node_table.add_row(time=ts.nodes_time[root])
+
+        left = np.full(num_root_children, interval[0])
+        right = np.full(num_root_children, interval[1])
+        parent = np.full(num_root_children, new_root, dtype=np.int32)
+        child = np.arange(num_root_children, dtype=np.int32)
+        tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
+        assert len(tables.edges) == num_root_children
+
+        old_sites_to_new = {}
+        for mut in tree.mutations():
+            if mut.node in children_of_root:
+                self.muts_to_remove.append(mut.id)
+                new_node = old_nodes_to_new[mut.node]
+                site_id = mut.site
+                if site_id not in old_sites_to_new:
+                    old_sites_to_new[site_id] = len(tables.sites)
+                    site = ts.site(site_id)
+                    tables.sites.add_row(position=site.position,
+                                        ancestral_state=site.ancestral_state,
+                                        metadata=site.metadata)
+                tables.mutations.add_row(site=old_sites_to_new[site_id],
+                                        node=new_node,
+                                        derived_state=mut.derived_state)
+                
+        tables.sort()
+        star_ts = tables.tree_sequence().trim()
+        assert star_ts.num_trees == 1
+        assert star_ts.num_nodes == num_root_children + 1
+        nj_untrimmed_ts = sc2ts.infer_binary(star_ts)
+        nj_ts = sc2ts.trim_branches(nj_untrimmed_ts)
+
+        self.old_nodes_to_new = old_nodes_to_new
+        self.old_sites_to_new = old_sites_to_new
+        return nj_ts
+    
+    def extract_rows_to_add(self, nj_ts):
+        new_nodes_to_old = {v: k for k, v in self.old_nodes_to_new.items()}
+        new_sites_to_old = {v: k for k, v in self.old_sites_to_new.items()}
+        new_root = nj_ts.first().root
+
+        for node in nj_ts.nodes():
+            if node.id == new_root:
+                new_nodes_to_old[node.id] = self.root
+            elif node.id >= self.num_root_children:
+                new_nodes_to_old[node.id] = self.next_node_id
+                self.next_node_id += 1
+        assert len(new_nodes_to_old) == nj_ts.num_nodes
+
+        for edge in nj_ts.edges():
+            self.new_edges.add_row(left=self.interval[0],
+                            right=self.interval[1],
+                            parent=new_nodes_to_old[edge.parent],
+                            child=new_nodes_to_old[edge.child])
+        for mut in nj_ts.mutations():
+            self.new_muts.add_row(site=new_sites_to_old[mut.site],
+                                node=new_nodes_to_old[mut.node],
+                                derived_state=mut.derived_state)
+            
+    def resolve_polytomies(self):
+        ts = self.ts
+        if len(self.recurrent_pos) == 0:
+            return ts
+        tree = ts.first()
+
+        for pos in self.recurrent_pos:
+            #print(pos)
+            tree = ts.at(pos)
+            nj_ts = self.infer_root_nj_tree(tree)
+            self.extract_rows_to_add(nj_ts)
+        return self.new_edges, self.new_muts, self.roots_to_modify, self.muts_to_remove
