@@ -385,6 +385,7 @@ def plot_tree(
             mut_labels[mut.id] = f"{ancestral}{mut.site}{derived}"
         else:
             mut_labels[mut.id] = ""
+        
     return tree.draw_svg(
         mutation_labels=mut_labels,
         size=size,
@@ -453,7 +454,7 @@ def compare_trees(
     # Display controls and output
     display(controls, output)
 
-    def update_display(x_lim):
+    def update_display(x_lim, position=None):
         with output:
             output.clear_output(wait=True)
             # Generate SVG for tree_1
@@ -482,8 +483,12 @@ def compare_trees(
             # Display SVGs side by side
             display(widgets.HBox([html1, html2]))
             # Update position label
+            if position is not None:
+                label = f"Interval: [{tree_1.interval.left}, {tree_1.interval.right}); Site pos: {position}"
+            else:
+                label = f"Interval: [{tree_1.interval.left}, {tree_1.interval.right})"
             position_label.value = (
-                f"Position: {tree_1.interval.left}-{tree_1.interval.right}"
+                label
             )
 
     def on_prev_tree_clicked(b):
@@ -508,7 +513,7 @@ def compare_trees(
             prev_site_pos = prev_sites[-1]  # Last site less than current position
             tree_1.seek(prev_site_pos)
             x_lim = tree_1.interval
-            update_display(x_lim)
+            update_display(x_lim, prev_site_pos)
         else:
             print("No previous site.")
 
@@ -520,7 +525,7 @@ def compare_trees(
             next_site_pos = next_sites[0]  # First site greater than current position
             tree_1.seek(next_site_pos)
             x_lim = tree_1.interval
-            update_display(x_lim)
+            update_display(x_lim, next_site_pos)
         else:
             print("No next site.")
 
