@@ -142,6 +142,7 @@ def generate_true_and_inferred_ancestors(
         sample_frac=sample_frac,
         sample_func=sample_func,
         freq_threshold=freq_threshold,
+        progress_monitor=True,
     )
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
@@ -411,22 +412,25 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
     )
     
     print("Running inference to add copied intervals")
-    anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=num_threads)
+    anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=num_threads, 
+                                        path_compression=False, progress_monitor=True)
     extended_anc_ts = tsinfer.extend_ancestor_ts(anc_ts, inferred_anc)
-    inferred_ts = tsinfer.match_samples(sample_data, extended_anc_ts, num_threads=num_threads, post_process=False)
+    inferred_ts = tsinfer.match_samples(sample_data, extended_anc_ts, num_threads=num_threads,
+                                            post_process=False,path_compression=False,progress_monitor=True)
     df = add_copied_intervals(inferred_ts, anc_ts, df)
     df.drop_duplicates(subset=["inferred_index", "true_index"], inplace=True)
     #df.set_index("inferred_index", inplace=True, drop=False)
-    return df, inferred_ts
+    return df, inferred_ts, anc_ts, extended_anc_ts
 
 def run_anc_evaluation(
-    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1
+    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1, num_threads=12,
 ):
     sample_data, true_anc, inferred_anc, anc_df = generate_true_and_inferred_ancestors(
-        ts, engine=engine, sample_frac=sample_frac, sample_func=sample_func, freq_threshold=freq_threshold
+        ts, engine=engine, sample_frac=sample_frac, sample_func=sample_func, 
+        freq_threshold=freq_threshold
     )
     print('Comparing true vs inferred ancestors')
-    df, inferred_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df)
+    df, inferred_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=num_threads)
     df['inferred_overlap_ratio'] = df.inferred_site_span / df.overlap_site_span
     df['true_overlap_ratio'] =  df.true_site_span / df.overlap_site_span
     return df, inferred_ts

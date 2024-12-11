@@ -50,7 +50,9 @@ import tsinfer.formats as formats
 import tsinfer.progress as progress
 import tsinfer.provenance as provenance
 import tsinfer.threads as threads
-
+import ipywidgets as widgets
+from IPython.display import display
+from IPython.core.display import HTML
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +514,7 @@ def generate_ancestors(
     if record_provenance:
         ancestor_data.record_provenance("generate_ancestors")
     ancestor_data.finalise()
-    if log_anc == True:
+    if log_anc == True or engine == "N":
         return ancestor_data, anc_df
     else:
         return ancestor_data
@@ -3031,17 +3033,39 @@ def extend_ancestor_ts(anc_ts, inferred_anc, root_id=1):
     return tables.tree_sequence()    
 
 class RootPolytomyResolver:
-    def __init__(self, ts, anc_ts):
+    def __init__(self, ts, anc_ts, store_trees=True):
         self.ts = ts
         self.sequence_length = ts.sequence_length
         self.tables = ts.dump_tables()
         self.roots = []
         self.muts_to_remove = []
-        self.recurrent_counts = np.zeros(anc_ts.num_sites)
+        self.store_trees = store_trees
+
+        anc_recurrent = set()
+        inf_recurrent = set()
         for site in anc_ts.sites():
-            self.recurrent_counts[site.id] = len(site.mutations)
-        self.recurrent_pos = anc_ts.sites_position[self.recurrent_counts > 1]
-        print(f"{len(self.recurrent_pos)} recurrent sites out of {len(anc_ts.sites())}")
+            if len(site.mutations) > 1:
+                anc_recurrent.add(site.position)
+        for site in ts.sites():
+            if len(site.mutations) > 1:
+                inf_recurrent.add(site.position)
+        self.recurrent_pos = list(anc_recurrent.intersection(inf_recurrent))
+        self.recurrent_pos = np.sort(np.array(self.recurrent_pos))
+
+        breakpoints = ts.breakpoints(as_array=True)
+        trees_index = np.searchsorted(breakpoints, self.recurrent_pos, side='right') - 1
+        trees_index, trees_num_recurrent = np.unique(trees_index, return_counts=True)
+        self.num_trees = len(trees_index)
+        
+        print(f"{len(self.recurrent_pos)} recurrent sites out of {len(anc_ts.sites())} in {self.num_trees} trees")
+        self.trees_index = trees_index
+        self.trees_num_recurrent = trees_num_recurrent
+        self.trees_interval = []
+        self.sites_map = []
+        self.star_nodes_map = []
+        self.star_ts = []
+        self.nj_nodes_map = []
+        self.nj_ts = []
 
     def infer_root_nj_tree(self, tree):
         root = tree.root
@@ -3069,7 +3093,6 @@ class RootPolytomyResolver:
         child = np.arange(num_root_children, dtype=np.int32)
         tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
         assert len(tables.edges) == num_root_children
-        sites_to_muts = defaultdict(list)
         ts_sites_to_nj = {}
         for mut in tree.mutations():
             if mut.node in children_of_root or mut.node == root:
@@ -3085,7 +3108,6 @@ class RootPolytomyResolver:
                     tables.sites.add_row(position=site.position,
                                         ancestral_state=site.ancestral_state,
                                         metadata=site.metadata)
-                sites_to_muts[site_id].append(mut.id)
                 tables.mutations.add_row(site=ts_sites_to_nj[site_id],
                                         node=new_node,
                                         derived_state=mut.derived_state)
@@ -3096,10 +3118,18 @@ class RootPolytomyResolver:
         assert star_ts.num_mutations > 0
         nj_untrimmed_ts = sc2ts.infer_binary(star_ts)
         nj_ts = sc2ts.trim_branches(nj_untrimmed_ts)
+
         nj_nodes_to_ts = {v: k for k, v in ts_nodes_to_nj.items()}
         nj_sites_to_ts = {v: k for k, v in ts_sites_to_nj.items()}
-        new_root = nj_ts.first().root
 
+        if self.store_trees is True:
+            nj_nodes_to_ts[new_root] = root
+            self.trees_interval.append(interval)
+            self.sites_map.append(nj_sites_to_ts)
+            self.star_nodes_map.append(nj_nodes_to_ts)
+            self.star_ts.append(star_ts)
+
+        new_root = nj_ts.first().root
         for node in nj_ts.nodes():
             if node.id == new_root:
                 nj_nodes_to_ts[node.id] = root
@@ -3109,6 +3139,7 @@ class RootPolytomyResolver:
                 new_node_time = min_time + node.time * (max_time - min_time)
                 self.tables.nodes.add_row(time=new_node_time)
         assert len(nj_nodes_to_ts) == nj_ts.num_nodes
+
         for edge in nj_ts.edges():
             parent = nj_nodes_to_ts[edge.parent]
             child = nj_nodes_to_ts[edge.child]
@@ -3119,26 +3150,26 @@ class RootPolytomyResolver:
                                     right=interval[1],
                                     parent=parent,
                                     child=child)
+            
         for mut in nj_ts.mutations():
             site_id = nj_sites_to_ts[mut.site]
             node_id = nj_nodes_to_ts[mut.node]
             self.tables.mutations.add_row(site=site_id,
                                         node=node_id,
                                         derived_state=mut.derived_state)
-            
+        
+        if self.store_trees is True:
+            self.nj_nodes_map.append(nj_nodes_to_ts)
+            self.nj_ts.append(nj_ts)
+
     def resolve_polytomies(self):
-        ts = self.ts
         if len(self.recurrent_pos) == 0:
-            return ts
-        breakpoints = ts.breakpoints(as_array=True)
-        tree_indices = np.searchsorted(breakpoints, self.recurrent_pos, side='right') - 1
-        tree_indices = np.unique(tree_indices)
-            
-        for tree_idx in tree_indices:
-            tree = ts.at_index(tree_idx)
+            return self.ts, []
+        for tree_idx in self.trees_index:
+            tree = self.ts.at_index(tree_idx)
             self.infer_root_nj_tree(tree)       
         tables = self.tables
-        edges_to_remove = np.where(np.isin(ts.edges_parent, self.roots))[0]
+        edges_to_remove = np.where(np.isin(self.ts.edges_parent, self.roots))[0]
         num_edges = len(tables.edges)
         num_muts = len(tables.mutations)
         tables.mutations.parent = np.full(num_muts, tskit.NULL, dtype=np.int32)
@@ -3151,4 +3182,94 @@ class RootPolytomyResolver:
         tables.compute_mutation_times()
         tables.build_index()
         tables.compute_mutation_parents()
-        return tables.tree_sequence(), self.recurrent_pos
+        return tables.tree_sequence()
+        
+    def plot_tree(self, index, type, time_scale=None, size=(1000, 400)):
+        sites_map = self.sites_map[index]
+        if type == 'star':
+            ts = self.star_ts[index]
+            nodes_map = self.star_nodes_map[index]
+            title = "Star tree"
+        elif type == 'nj':
+            ts = self.nj_ts[index]
+            nodes_map = self.nj_nodes_map[index]
+            title = "Neighbour-Joining tree"
+        else:
+            raise ValueError("type must be 'star' or 'nj'")
+        
+        mut_labels = {}
+        tree = ts.first()
+        for mut in ts.mutations():
+            ancestral = ts.site(mut.site).ancestral_state
+            derived = mut.derived_state
+            site_id = sites_map[mut.site]
+            mut_labels[mut.id] = f"{ancestral}{site_id}{derived}"
+        node_labels = {}
+        for node in ts.nodes():
+            node_labels[node.id] = str(nodes_map[node.id])
+        
+        return tree.draw_svg(
+            mutation_labels=mut_labels,
+            node_labels=node_labels,
+            size=size,
+            title=title,
+            time_scale=time_scale,
+        )
+
+    def plot_trees(self, size=(600,400)):
+        if not self.star_ts or not self.nj_ts:
+            print("No trees stored. Run resolve_polytomies() with store_trees=True first.")
+            return
+        current_index = 0
+        max_index = self.num_trees - 1
+
+        prev_button = widgets.Button(description="Previous")
+        next_button = widgets.Button(description="Next")
+        index_label = widgets.Label(value=f"Index: {current_index}")
+        index_input = widgets.IntText(value=0, description="Jump to:")
+        go_button = widgets.Button(description="Go")
+
+        output = widgets.Output()
+
+        def update_display():
+            with output:
+                output.clear_output(wait=True)
+                star_svg = self.plot_tree(current_index, type="star", size=size)
+                nj_svg = self.plot_tree(current_index, type="nj", size=size)
+                star_html = widgets.HTML(value=star_svg)
+                nj_html = widgets.HTML(value=nj_svg)
+                left, right = self.trees_interval[current_index]
+                display(widgets.HBox([star_html, nj_html]))
+                index_label.value = f"Index: {current_index}; Interval: [{left}, {right})"
+
+        def on_prev_clicked(_):
+            nonlocal current_index
+            if current_index > 0:
+                current_index -= 1
+                update_display()
+
+        def on_next_clicked(_):
+            nonlocal current_index
+            if current_index < max_index:
+                current_index += 1
+                update_display()
+
+        def on_go_clicked(_):
+            nonlocal current_index
+            requested_index = index_input.value
+            if requested_index < 0:
+                requested_index = 0
+            elif requested_index > max_index:
+                requested_index = max_index
+            current_index = requested_index
+            update_display()
+
+        prev_button.on_click(on_prev_clicked)
+        next_button.on_click(on_next_clicked)
+        go_button.on_click(on_go_clicked)
+
+        controls = widgets.HBox([prev_button, next_button, index_label, index_input, go_button])
+        display(controls, output)
+        update_display()
+            
+            
