@@ -510,7 +510,7 @@ def generate_ancestors(
         log_anc=log_anc,
         freq_threshold=freq_threshold,
         one_site_per_anc=one_site_per_anc,
-        )
+    )
     generator.add_sites(exclude_positions)
     ancestor_data, anc_df = generator.run()
     for timestamp, record in sample_data.provenances():
@@ -522,6 +522,7 @@ def generate_ancestors(
         return ancestor_data, anc_df
     else:
         return ancestor_data
+
 
 def match_ancestors(
     sample_data,
@@ -1299,7 +1300,7 @@ def insert_missing_sites(
 ):
     """
     Return a new tree sequence containing extra sites that are present in a
-    :class:`SampleData` instance but are missing from a corresponding tree sequence.    
+    :class:`SampleData` instance but are missing from a corresponding tree sequence.
     At each newly inserted site, mutations are overlaid parsimoneously, using
     :meth:`tskit.Tree.map_mutations`,
     such that the realised variation at that site corresponds to the allelic
@@ -1438,7 +1439,7 @@ class AncestorsGenerator:
         progress_monitor=None,
         log_anc=None,
         freq_threshold=1,
-        one_site_per_anc=False,   
+        one_site_per_anc=False,
     ):
         self.sample_data = sample_data
         self.ancestor_data_path = ancestor_data_path
@@ -1493,9 +1494,11 @@ class AncestorsGenerator:
         elif engine == constants.NUMBA_ENGINE:
             if sample_func is None:
                 sample_frac = self.sample_frac
+
                 @njit
                 def sample_func(sample_set_size):
                     return math.floor(sample_set_size * sample_frac)
+
                 self.sample_func = sample_func
 
             logger.debug("Using Numba AncestorBuilder implementation")
@@ -1503,7 +1506,7 @@ class AncestorsGenerator:
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
-                method='primary',
+                method="primary",
                 sample_func=sample_func,
                 freq_threshold=freq_threshold,
                 one_site_per_anc=one_site_per_anc,
@@ -1514,7 +1517,7 @@ class AncestorsGenerator:
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
-                method='alternative',
+                method="alternative",
             )
         else:
             raise ValueError(f"Unknown engine:{engine}")
@@ -1535,7 +1538,7 @@ class AncestorsGenerator:
         of samples with the derived allele divided by the total number of samples
         with non-missing alleles).
         """
-        
+
         if exclude_positions is None:
             exclude_positions = set()
         else:
@@ -1567,7 +1570,9 @@ class AncestorsGenerator:
                     assert counts.known != counts.derived
                     assert counts.known != counts.ancestral
                     time = counts.derived / counts.known
-                    logging.info(f"site: {site.id-1}, time={counts.derived}/{counts.ancestral}={time}")
+                    logging.info(
+                        f"site: {site.id-1}, time={counts.derived}/{counts.ancestral}={time}"
+                    )
                 if np.isnan(time):
                     use_site = False  # Site with meaningless time value: skip inference
             if use_site:
@@ -1596,37 +1601,39 @@ class AncestorsGenerator:
                     inferred_pos_left = sites_position[anc.start]
                     inferred_pos_right = sites_position[anc.end]
                     inferred_pos_span = inferred_pos_right - inferred_pos_left
-                    anc_list.append({
-                        'inferred_index': index+2,
-                        'perf_duration': duration,
-                        'inferred_site_left': anc.start,
-                        'inferred_site_right': anc.end,
-                        'inferred_site_span': anc.end - anc.start,
-                        'inferred_pos_left': inferred_pos_left,
-                        'inferred_pos_right': inferred_pos_right,
-                        'inferred_pos_span': inferred_pos_span,
-                        'sample_counts': sample_counts,
-                        'min_sample_count': anc.min_sample_count,
-                        'max_sample_count': anc.sample_counts.max(),
-                        'frequency': t,
-                        'num_focal_sites': len(focal_sites),
-                        'focal_site_list': list(focal_sites),
-                        'focal_site_left': focal_sites[0],
-                        'focal_site_right': focal_sites[-1],
-                        'focal_pos_list': list(focal_pos),
-                        'focal_pos_left': focal_pos[0],
-                        'focal_pos_right': focal_pos[-1],
-                        'num_sites': self.num_sites,
-                        'num_samples': self.num_samples,
-                        'iteration': self.iteration,
-                        'sample_frac': self.sample_frac,
-                        'freq_threshold': self.freq_threshold,
-                        'one_site_per_anc': self.one_site_per_anc,
-                    })
+                    anc_list.append(
+                        {
+                            "inferred_index": index + 2,
+                            "perf_duration": duration,
+                            "inferred_site_left": anc.start,
+                            "inferred_site_right": anc.end,
+                            "inferred_site_span": anc.end - anc.start,
+                            "inferred_pos_left": inferred_pos_left,
+                            "inferred_pos_right": inferred_pos_right,
+                            "inferred_pos_span": inferred_pos_span,
+                            "sample_counts": sample_counts,
+                            "min_sample_count": anc.min_sample_count,
+                            "max_sample_count": anc.sample_counts.max(),
+                            "frequency": t,
+                            "num_focal_sites": len(focal_sites),
+                            "focal_site_list": list(focal_sites),
+                            "focal_site_left": focal_sites[0],
+                            "focal_site_right": focal_sites[-1],
+                            "focal_pos_list": list(focal_pos),
+                            "focal_pos_left": focal_pos[0],
+                            "focal_pos_right": focal_pos[-1],
+                            "num_sites": self.num_sites,
+                            "num_samples": self.num_samples,
+                            "iteration": self.iteration,
+                            "sample_frac": self.sample_frac,
+                            "freq_threshold": self.freq_threshold,
+                            "one_site_per_anc": self.one_site_per_anc,
+                        }
+                    )
                 self.ancestor_data.add_ancestor(
                     start=anc.start,
                     end=anc.end,
-                    time=t, 
+                    time=t,
                     focal_sites=focal_sites,
                     haplotype=anc.haplotype,
                     min_sample_count=anc.min_sample_count,
@@ -1833,7 +1840,7 @@ class Matcher:
         progress_monitor=None,
         allow_multiallele=False,
     ):
-        
+
         if engine == constants.NUMBA_ENGINE:
             engine = constants.C_ENGINE
         self.sample_data = sample_data
@@ -2259,9 +2266,11 @@ class AncestorMatcher(Matcher):
                 group,
                 len(ancestor_ids),
                 extra_nodes,
-                sum(result.mean_traceback_size for result in results) / len(results)
-                if len(results) > 0
-                else float("nan"),
+                (
+                    sum(result.mean_traceback_size for result in results) / len(results)
+                    if len(results) > 0
+                    else float("nan")
+                ),
                 self.tree_sequence_builder.num_edges,
             )
         )
@@ -2996,6 +3005,7 @@ def map_mutations_down(ts, trunc_anc, anc_map):
         site_dict[site] = new_nodes
     return site_dict
 
+
 def extend_ancestor_ts(anc_ts, inferred_anc, root_id=1):
     anc_map = []
     trunc_anc = []
@@ -3023,20 +3033,21 @@ def extend_ancestor_ts(anc_ts, inferred_anc, root_id=1):
     edges_child = tables.edges.child
     child_is_anc = np.isin(edges_child, trunc_anc)
     tables.edges.keep_rows(~child_is_anc)
-    logger.debug(f'Removed {np.sum(child_is_anc)} edges with anc as child')
+    logger.debug(f"Removed {np.sum(child_is_anc)} edges with anc as child")
 
     edges_parent = tables.edges.parent
     parent_is_anc = np.isin(edges_parent, trunc_anc)
-    logger.debug(f'Changed {np.sum(parent_is_anc)} edges with anc as parent')
+    logger.debug(f"Changed {np.sum(parent_is_anc)} edges with anc as parent")
     new_parent = edges_parent
     new_parent[parent_is_anc] = root_id
     tables.edges.parent = new_parent
 
     tables.edges.squash()
-    logger.debug(f'{len(new_parent) - len(tables.edges)} edges removed from squashing')
+    logger.debug(f"{len(new_parent) - len(tables.edges)} edges removed from squashing")
     tables.sort()
     sites_pos = anc_ts.sites_position[trunc_sites]
     return tables.tree_sequence()
+
 
 def unsquash(edge_table, positions, edges=None):
     """
@@ -3083,6 +3094,7 @@ class RootPolytomyResolver:
         self.nj_nodes_map = []
         self.nj_ts = []
         self.roots = []
+        self.sites_pos = set()
 
         ultimate_root = base_ts.node(1)
         assert np.sum(base_ts.edges_child == ultimate_root.id) == 1
@@ -3095,6 +3107,9 @@ class RootPolytomyResolver:
         self.ultimate_roots = np.where(ts.nodes_time == ultimate_root.time)[0]
         self.root_edges_mask = np.isin(ts.edges_parent, self.ultimate_roots)
         top_tables = tables.copy()
+        edges_mask = ts.nodes_time[ts.edges_parent] == ultimate_root.time
+        ts.nodes_time[ts.edges_child[edges_mask]]
+
         top_tables.edges.keep_rows(self.root_edges_mask)
         breaks = np.union1d(top_tables.edges.left, top_tables.edges.right)
         unsquash(top_tables.edges, breaks)
@@ -3102,7 +3117,7 @@ class RootPolytomyResolver:
             top_tables.nodes.flags.dtype.type(tskit.NODE_IS_SAMPLE)
         )
         children = np.unique(top_tables.edges.child)
-        #kill all sample node flags
+        # kill all sample node flags
         node_flags[children] = node_flags[children] | tskit.NODE_IS_SAMPLE
         top_tables.nodes.flags = node_flags
 
@@ -3112,7 +3127,9 @@ class RootPolytomyResolver:
             if m.edge >= 0:
                 self.root_mutations_mask[m.id] = True
         top_tables = top_ts.dump_tables()
-        top_tables.mutations.parent = np.full(ts.num_mutations, tskit.NULL, dtype=np.int32)
+        top_tables.mutations.parent = np.full(
+            ts.num_mutations, tskit.NULL, dtype=np.int32
+        )
         top_tables.mutations.keep_rows(self.root_mutations_mask)
         top_ts = top_tables.tree_sequence()
         self.top_ts = top_ts
@@ -3150,17 +3167,16 @@ class RootPolytomyResolver:
         right = np.full(num_edges, interval[1])
         parent = np.full(num_edges, new_root, dtype=np.int32)
         child = np.arange(num_edges, dtype=np.int32)
-        tables.edges.set_columns(
-            left=left, right=right, parent=parent, child=child
-        )
+        tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
         assert len(tables.edges) == num_edges
-        
+
         for mut in tree.mutations():
             assert mut.node in edges_child
             self.muts_to_remove.append(mut.id)
             site_id = mut.site
             if site_id not in ts_sites_to_nj:
                 site = self.ts.site(site_id)
+                self.sites_pos.add(site.position)
                 ts_sites_to_nj[site_id] = tables.sites.add_row(
                     position=site.position,
                     ancestral_state=site.ancestral_state,
@@ -3212,15 +3228,14 @@ class RootPolytomyResolver:
             site_id = nj_sites_to_ts[mut.site]
             node_id = nj_nodes_to_ts[mut.node]
             self.tables.mutations.add_row(
-                site=site_id,
-                node=node_id,
-                derived_state=mut.derived_state
+                site=site_id, node=node_id, derived_state=mut.derived_state
             )
         if self.store_trees:
             self.nj_nodes_map.append(nj_nodes_to_ts)
             self.nj_ts.append(nj_ts)
 
     def resolve_polytomies(self):
+        before = time_.perf_counter()
         for tree in self.top_ts.trees():
             if tree.num_edges > 0:
                 if tree.num_mutations > 0:
@@ -3236,12 +3251,14 @@ class RootPolytomyResolver:
                         self.tables.edges.add_row(
                             left=left, right=right, parent=parent, child=child
                         )
+        wall_time = time_.perf_counter() - before
+        print(f"Loop time: {wall_time:.2f} seconds")
         tables = self.tables
         num_edges = len(tables.edges)
         assert num_edges > self.ts.num_edges
         num_muts = len(tables.mutations)
         assert num_muts > self.ts.num_mutations
-        
+
         tables.mutations.parent = np.full(num_muts, tskit.NULL, dtype=np.int32)
         keep_mutations_mask = np.full(num_muts, True)
         muts_to_remove = np.where(self.root_mutations_mask)[0]
@@ -3264,7 +3281,9 @@ class RootPolytomyResolver:
         self.trees_interval = list(zip(self.trees_left, self.trees_right))
         return self.resolved_ts
 
-    def plot_tree(self, index, type, time_scale=None, size=(1000, 400), true_sites=True):
+    def plot_tree(
+        self, index, type, time_scale=None, size=(1000, 400), true_sites=True
+    ):
         if type == "star":
             ts = self.star_ts[index]
             nodes_map = self.star_nodes_map[index]
@@ -3320,16 +3339,17 @@ class RootPolytomyResolver:
         elif type == "top_tree":
             left, right = self.trees_interval[index]
             tree = self.top_ts.at(left)
-            for mut in tree.mutations():
-                nj_site = mut.site
-                ts_site = self.sites_map[index][nj_site]
-                if true_sites is False:
-                    site_label = nj_site
-                else:
-                    site_label = ts_site
-                ancestral = ts.site(mut.site).ancestral_state
-                derived = mut.derived_state
-                mut_labels[mut.id] = f"{ancestral}{site_label}{derived}"
+            mut_labels = {}
+            # for mut in tree.mutations():
+            #     nj_site = mut.site
+            #     ts_site = self.sites_map[index][nj_site]
+            #     if true_sites is False:
+            #         site_label = nj_site
+            #     else:
+            #         site_label = ts_site
+            #     ancestral = self.top_ts.site(mut.site).ancestral_state
+            #     derived = mut.derived_state
+            #     mut_labels[mut.id] = f"{ancestral}{site_label}{derived}"
             edges = tree.edge_array[tree.edge_array != tskit.NULL]
             edge_roots = self.top_ts.edges_parent[edges]
             order = tree.nodes(edge_roots[0], order="minlex_postorder")
@@ -3340,29 +3360,31 @@ class RootPolytomyResolver:
                 y_axis=True,
                 title=title,
                 time_scale=time_scale,
-                mutation_labels=mut_labels,
+                # mutation_labels=mut_labels,
             )
         else:
             raise ValueError("type must be 'star', 'nj', or 'top_tree'")
 
     def plot_trees(self, size=(600, 400)):
         if len(self.star_ts) == 0:
-            raise ValueError("You must run resolve_polytomies() with store_trees=True first")
+            raise ValueError(
+                "You must run resolve_polytomies() with store_trees=True first"
+            )
         if self.trees_interval is None:
-            raise ValueError("You must run resolve_polytomies() so that self.trees_interval is set.")
+            raise ValueError(
+                "You must run resolve_polytomies() so that self.trees_interval is set."
+            )
         current_index = 0
         max_index = self.num_trees - 1
         prev_button = widgets.Button(description="Previous")
         next_button = widgets.Button(description="Next")
         index_label = widgets.Label(value=f"Index: {current_index}")
         position_input = widgets.FloatText(
-            value=0.0,
-            description="Position:",
-            min=0.0,
-            max=self.sequence_length
+            value=0.0, description="Position:", min=0.0, max=self.sequence_length
         )
         go_button = widgets.Button(description="Go")
         output = widgets.Output()
+
         def update_display():
             with output:
                 output.clear_output(wait=True)
@@ -3374,17 +3396,22 @@ class RootPolytomyResolver:
                 nj_html = widgets.HTML(value=nj_svg)
                 left, right = self.trees_interval[current_index]
                 display(widgets.HBox([top_html, star_html, nj_html]))
-                index_label.value = f"Index: {current_index}; Interval: [{left}, {right})"
+                index_label.value = (
+                    f"Index: {current_index}; Interval: [{left}, {right})"
+                )
+
         def on_prev_clicked(_):
             nonlocal current_index
             if current_index > 0:
                 current_index -= 1
                 update_display()
+
         def on_next_clicked(_):
             nonlocal current_index
             if current_index < max_index:
                 current_index += 1
                 update_display()
+
         def on_go_clicked(_):
             nonlocal current_index
             pos = position_input.value
@@ -3392,16 +3419,175 @@ class RootPolytomyResolver:
                 pos = 0
             elif pos > self.sequence_length:
                 pos = self.sequence_length
-            idx = np.searchsorted(self.trees_left, pos, side='right') - 1
+            idx = np.searchsorted(self.trees_left, pos, side="right") - 1
             if idx < 0:
                 idx = 0
             elif idx > max_index:
                 idx = max_index
             current_index = idx
             update_display()
+
         prev_button.on_click(on_prev_clicked)
         next_button.on_click(on_next_clicked)
         go_button.on_click(on_go_clicked)
-        controls = widgets.HBox([prev_button, next_button, index_label, position_input, go_button])
+        controls = widgets.HBox(
+            [prev_button, next_button, index_label, position_input, go_button]
+        )
         display(controls, output)
         update_display()
+
+def infer_binary(tables, mutations, children, root, interval):
+    children = np.array(list(children))
+    # Construct star TS
+    star_tables = tskit.TableCollection(tables.sequence_length)
+    nodes_map = {}
+    for child in children:
+        nodes_map[child] = star_tables.nodes.add_row(time=0, flags=tskit.NODE_IS_SAMPLE)
+    nodes_map[root] = star_tables.nodes.add_row(time=1)
+
+    num_edges = len(children)
+    left = np.full(num_edges, interval[0])
+    right = np.full(num_edges, interval[1])
+    parent = np.full(num_edges, nodes_map[root], dtype=np.int32)
+    child = np.arange(num_edges, dtype=np.int32)
+    star_tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
+    assert len(star_tables.edges) == num_edges
+
+    sites_map = {}
+    for m in mutations:
+        mut = tables.mutations[m]
+        site = tables.sites[mut.site]
+        assert interval[0] <= site.position < interval[1]
+        assert mut.node in children
+        if mut.site not in sites_map:
+            sites_map[mut.site] = star_tables.sites.add_row(
+                position=site.position,
+                ancestral_state=site.ancestral_state,
+            )
+        star_tables.mutations.add_row(
+            site=sites_map[mut.site],
+            node=nodes_map[mut.node],
+            derived_state=mut.derived_state,
+        )
+
+    star_tables.sort()
+    star_ts = star_tables.tree_sequence().trim()
+    assert star_ts.num_trees == 1
+    assert star_ts.num_nodes == num_edges + 1
+    assert star_ts.num_mutations > 0
+
+    # Construct neighbour-joining TS
+    nj_untrimmed_ts = sc2ts.infer_binary(star_ts)
+    nj_ts = sc2ts.trim_branches(nj_untrimmed_ts)
+    inv_nodes_map = {v: k for k, v in nodes_map.items()}
+    inv_sites_map = {v: k for k, v in sites_map.items()}
+    nj_root = nj_ts.first().root
+
+    nodes_time = tables.nodes.time
+    min_time = np.max(nodes_time[children])
+    max_time = nodes_time[root]
+    for node in nj_ts.nodes():
+        if node.id == nj_root:
+            inv_nodes_map[node.id] = root
+        elif node.id >= num_edges:
+            new_node_time = min_time + node.time * (max_time - min_time)
+            inv_nodes_map[node.id] = tables.nodes.add_row(time=new_node_time)
+    assert len(inv_nodes_map) == nj_ts.num_nodes
+
+    nodes_time = tables.nodes.time
+    for edge in nj_ts.edges():
+        parent = inv_nodes_map[edge.parent]
+        child = inv_nodes_map[edge.child]
+        parent_time = nodes_time[parent]
+        child_time = nodes_time[child]
+        assert parent_time > child_time
+        tables.edges.add_row(
+            left=interval[0],
+            right=interval[1],
+            parent=parent,
+            child=child,
+        )
+
+    for mut in nj_ts.mutations():
+        tables.mutations.add_row(
+            site=inv_sites_map[mut.site],
+            node=inv_nodes_map[mut.node],
+            derived_state=mut.derived_state,
+        )
+
+def resolve_polytomies(base_ts):
+    ts = post_process(base_ts)
+    tables = ts.dump_tables()
+    ultimate_root = base_ts.node(1)
+    assert np.sum(base_ts.edges_child == ultimate_root.id) == 1
+    assert ultimate_root.metadata["ancestor_data_id"] == 1
+    
+    tables.mutations.parent = np.full(ts.num_mutations, tskit.NULL, dtype=np.int32)
+    root_edges_mask = ts.nodes_time[ts.edges_parent] >= ultimate_root.time
+    root_edges = tables.edges[root_edges_mask]
+    tables.edges.keep_rows(~root_edges_mask)
+    assert len(tables.edges) + len(root_edges) == ts.num_edges
+
+    breaks = np.sort(np.union1d(root_edges.left, root_edges.right))
+    unsquash(root_edges, breaks)
+    order = np.argsort(root_edges.left)
+    root_edges.replace_with(root_edges[order])
+
+    keep_mutations = np.ones(2 * ts.num_mutations, dtype=bool)
+    mutations_position = ts.sites_position[ts.mutations_site]
+    assert np.array_equal(mutations_position, np.sort(mutations_position))
+    mutations_node = ts.mutations_node
+    edges_left = root_edges.left
+    edges_right = root_edges.right
+    edges_child = root_edges.child
+    edges_parent = root_edges.parent
+
+    e = 0
+    m = 0
+    before = time_.perf_counter()
+    for interval in itertools.pairwise(breaks):
+        children = set()
+        edges = []
+        mutations = []
+
+        while e < len(root_edges) and interval[0] == edges_left[e]:
+            assert interval[1] == edges_right[e]
+            children.add(edges_child[e])
+            edges.append(e)
+            e += 1
+
+        while m < ts.num_mutations and mutations_position[m] < interval[1]:
+            if mutations_node[m] in children:
+                keep_mutations[m] = False
+                mutations.append(m)
+            m += 1
+
+        if len(mutations) <= 1:
+            for edge in edges:
+                tables.edges.append(root_edges[edge])
+            for mut in mutations:
+                tables.mutations.append(tables.mutations[mut])
+        else:
+            parents = edges_parent[edges]
+            root = parents[0]
+            assert np.all(parents == root)
+            infer_binary(
+                tables=tables,
+                mutations=mutations,
+                children=children,
+                root=root,
+                interval=interval,
+            )
+    wall_time = time_.perf_counter() - before
+    print(f"Loop time: {wall_time:.2f} seconds")
+
+    keep_mutations = keep_mutations[range(len(tables.mutations))]
+    tables.mutations.keep_rows(keep_mutations)
+    tables.edges.squash()
+    tables.sort()
+    tables.build_index()
+    tables.compute_mutation_times()
+    tables.build_index()
+    tables.compute_mutation_parents()
+    return tables.tree_sequence()
+
