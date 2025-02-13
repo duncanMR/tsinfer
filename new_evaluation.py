@@ -430,7 +430,7 @@ def run_anc_evaluation(
         freq_threshold=freq_threshold
     )
     print('Comparing true vs inferred ancestors')
-    df, inferred_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=num_threads)
+    df, inferred_ts, anc_ts, extended_anc_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=num_threads)
     df['inferred_overlap_ratio'] = df.inferred_site_span / df.overlap_site_span
     df['true_overlap_ratio'] =  df.true_site_span / df.overlap_site_span
     return df, inferred_ts

@@ -3436,158 +3436,162 @@ class RootPolytomyResolver:
         display(controls, output)
         update_display()
 
-def infer_binary(tables, mutations, children, root, interval):
-    children = np.array(list(children))
-    # Construct star TS
-    star_tables = tskit.TableCollection(tables.sequence_length)
-    nodes_map = {}
-    for child in children:
-        nodes_map[child] = star_tables.nodes.add_row(time=0, flags=tskit.NODE_IS_SAMPLE)
-    nodes_map[root] = star_tables.nodes.add_row(time=1)
+class NewResolver:
+    def __init__(self, base_ts): 
+        self.ts = post_process(base_ts)
+        self.tables = self.ts.dump_tables()
+        self.base_ts = base_ts
 
-    num_edges = len(children)
-    left = np.full(num_edges, interval[0])
-    right = np.full(num_edges, interval[1])
-    parent = np.full(num_edges, nodes_map[root], dtype=np.int32)
-    child = np.arange(num_edges, dtype=np.int32)
-    star_tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
-    assert len(star_tables.edges) == num_edges
+    def infer_binary(self, mutations, children, root, interval):
+        children = np.array(list(children))
+        # Construct star TS
+        star_tables = tskit.TableCollection(self.tables.sequence_length)
+        nodes_map = {}
+        for child in children:
+            nodes_map[child] = star_tables.nodes.add_row(time=0, flags=tskit.NODE_IS_SAMPLE)
+        nodes_map[root] = star_tables.nodes.add_row(time=1)
 
-    sites_map = {}
-    for m in mutations:
-        mut = tables.mutations[m]
-        site = tables.sites[mut.site]
-        assert interval[0] <= site.position < interval[1]
-        assert mut.node in children
-        if mut.site not in sites_map:
-            sites_map[mut.site] = star_tables.sites.add_row(
-                position=site.position,
-                ancestral_state=site.ancestral_state,
+        num_edges = len(children)
+        left = np.full(num_edges, interval[0])
+        right = np.full(num_edges, interval[1])
+        parent = np.full(num_edges, nodes_map[root], dtype=np.int32)
+        child = np.arange(num_edges, dtype=np.int32)
+        star_tables.edges.set_columns(left=left, right=right, parent=parent, child=child)
+        assert len(star_tables.edges) == num_edges
+
+        sites_map = {}
+        for m in mutations:
+            mut = self.tables.mutations[m]
+            site = self.tables.sites[mut.site]
+            assert interval[0] <= site.position < interval[1]
+            assert mut.node in children
+            if mut.site not in sites_map:
+                sites_map[mut.site] = star_tables.sites.add_row(
+                    position=site.position,
+                    ancestral_state=site.ancestral_state,
+                )
+            star_tables.mutations.add_row(
+                site=sites_map[mut.site],
+                node=nodes_map[mut.node],
+                derived_state=mut.derived_state,
             )
-        star_tables.mutations.add_row(
-            site=sites_map[mut.site],
-            node=nodes_map[mut.node],
-            derived_state=mut.derived_state,
-        )
 
-    star_tables.sort()
-    star_ts = star_tables.tree_sequence().trim()
-    assert star_ts.num_trees == 1
-    assert star_ts.num_nodes == num_edges + 1
-    assert star_ts.num_mutations > 0
+        star_tables.sort()
+        star_ts = star_tables.tree_sequence().trim()
+        assert star_ts.num_trees == 1
+        assert star_ts.num_nodes == num_edges + 1
+        assert star_ts.num_mutations > 0
 
-    # Construct neighbour-joining TS
-    nj_untrimmed_ts = sc2ts.infer_binary(star_ts)
-    nj_ts = sc2ts.trim_branches(nj_untrimmed_ts)
-    inv_nodes_map = {v: k for k, v in nodes_map.items()}
-    inv_sites_map = {v: k for k, v in sites_map.items()}
-    nj_root = nj_ts.first().root
+        # Construct neighbour-joining TS
+        nj_untrimmed_ts = sc2ts.infer_binary(star_ts)
+        nj_ts = sc2ts.trim_branches(nj_untrimmed_ts)
+        inv_nodes_map = {v: k for k, v in nodes_map.items()}
+        inv_sites_map = {v: k for k, v in sites_map.items()}
+        nj_root = nj_ts.first().root
 
-    nodes_time = tables.nodes.time
-    min_time = np.max(nodes_time[children])
-    max_time = nodes_time[root]
-    for node in nj_ts.nodes():
-        if node.id == nj_root:
-            inv_nodes_map[node.id] = root
-        elif node.id >= num_edges:
-            new_node_time = min_time + node.time * (max_time - min_time)
-            inv_nodes_map[node.id] = tables.nodes.add_row(time=new_node_time)
-    assert len(inv_nodes_map) == nj_ts.num_nodes
+        nodes_time = self.tables.nodes.time
+        min_time = np.max(nodes_time[children])
+        max_time = nodes_time[root]
+        for node in nj_ts.nodes():
+            if node.id == nj_root:
+                inv_nodes_map[node.id] = root
+            elif node.id >= num_edges:
+                new_node_time = min_time + node.time * (max_time - min_time)
+                inv_nodes_map[node.id] = self.tables.nodes.add_row(time=new_node_time)
+        assert len(inv_nodes_map) == nj_ts.num_nodes
 
-    nodes_time = tables.nodes.time
-    for edge in nj_ts.edges():
-        parent = inv_nodes_map[edge.parent]
-        child = inv_nodes_map[edge.child]
-        parent_time = nodes_time[parent]
-        child_time = nodes_time[child]
-        assert parent_time > child_time
-        tables.edges.add_row(
-            left=interval[0],
-            right=interval[1],
-            parent=parent,
-            child=child,
-        )
-
-    for mut in nj_ts.mutations():
-        tables.mutations.add_row(
-            site=inv_sites_map[mut.site],
-            node=inv_nodes_map[mut.node],
-            derived_state=mut.derived_state,
-        )
-
-def resolve_polytomies(base_ts):
-    ts = post_process(base_ts)
-    tables = ts.dump_tables()
-    ultimate_root = base_ts.node(1)
-    assert np.sum(base_ts.edges_child == ultimate_root.id) == 1
-    assert ultimate_root.metadata["ancestor_data_id"] == 1
-    
-    tables.mutations.parent = np.full(ts.num_mutations, tskit.NULL, dtype=np.int32)
-    root_edges_mask = ts.nodes_time[ts.edges_parent] >= ultimate_root.time
-    root_edges = tables.edges[root_edges_mask]
-    tables.edges.keep_rows(~root_edges_mask)
-    assert len(tables.edges) + len(root_edges) == ts.num_edges
-
-    breaks = np.sort(np.union1d(root_edges.left, root_edges.right))
-    unsquash(root_edges, breaks)
-    order = np.argsort(root_edges.left)
-    root_edges.replace_with(root_edges[order])
-
-    keep_mutations = np.ones(2 * ts.num_mutations, dtype=bool)
-    mutations_position = ts.sites_position[ts.mutations_site]
-    assert np.array_equal(mutations_position, np.sort(mutations_position))
-    mutations_node = ts.mutations_node
-    edges_left = root_edges.left
-    edges_right = root_edges.right
-    edges_child = root_edges.child
-    edges_parent = root_edges.parent
-
-    e = 0
-    m = 0
-    before = time_.perf_counter()
-    for interval in itertools.pairwise(breaks):
-        children = set()
-        edges = []
-        mutations = []
-
-        while e < len(root_edges) and interval[0] == edges_left[e]:
-            assert interval[1] == edges_right[e]
-            children.add(edges_child[e])
-            edges.append(e)
-            e += 1
-
-        while m < ts.num_mutations and mutations_position[m] < interval[1]:
-            if mutations_node[m] in children:
-                keep_mutations[m] = False
-                mutations.append(m)
-            m += 1
-
-        if len(mutations) <= 1:
-            for edge in edges:
-                tables.edges.append(root_edges[edge])
-            for mut in mutations:
-                tables.mutations.append(tables.mutations[mut])
-        else:
-            parents = edges_parent[edges]
-            root = parents[0]
-            assert np.all(parents == root)
-            infer_binary(
-                tables=tables,
-                mutations=mutations,
-                children=children,
-                root=root,
-                interval=interval,
+        nodes_time = self.tables.nodes.time
+        for edge in nj_ts.edges():
+            parent = inv_nodes_map[edge.parent]
+            child = inv_nodes_map[edge.child]
+            parent_time = nodes_time[parent]
+            child_time = nodes_time[child]
+            assert parent_time > child_time
+            self.tables.edges.add_row(
+                left=interval[0],
+                right=interval[1],
+                parent=parent,
+                child=child,
             )
-    wall_time = time_.perf_counter() - before
-    print(f"Loop time: {wall_time:.2f} seconds")
 
-    keep_mutations = keep_mutations[range(len(tables.mutations))]
-    tables.mutations.keep_rows(keep_mutations)
-    tables.edges.squash()
-    tables.sort()
-    tables.build_index()
-    tables.compute_mutation_times()
-    tables.build_index()
-    tables.compute_mutation_parents()
-    return tables.tree_sequence()
+        for mut in nj_ts.mutations():
+            self.tables.mutations.add_row(
+                site=inv_sites_map[mut.site],
+                node=inv_nodes_map[mut.node],
+                derived_state=mut.derived_state,
+            )
+
+    def resolve_polytomies(self):
+        ts = self.ts
+        ultimate_root = self.base_ts.node(1)
+        assert np.sum(self.base_ts.edges_child == ultimate_root.id) == 1
+        assert ultimate_root.metadata["ancestor_data_id"] == 1
+        
+        self.tables.mutations.parent = np.full(ts.num_mutations, tskit.NULL, dtype=np.int32)
+        root_edges_mask = ts.nodes_time[ts.edges_parent] >= ultimate_root.time
+        root_edges = self.tables.edges[root_edges_mask]
+        self.tables.edges.keep_rows(~root_edges_mask)
+        assert len(self.tables.edges) + len(root_edges) == ts.num_edges
+
+        breaks = np.sort(np.union1d(root_edges.left, root_edges.right))
+        unsquash(root_edges, breaks)
+        order = np.argsort(root_edges.left)
+        root_edges.replace_with(root_edges[order])
+
+        keep_mutations = np.ones(2 * ts.num_mutations, dtype=bool)
+        mutations_position = ts.sites_position[ts.mutations_site]
+        assert np.array_equal(mutations_position, np.sort(mutations_position))
+        mutations_node = ts.mutations_node
+        edges_left = root_edges.left
+        edges_right = root_edges.right
+        edges_child = root_edges.child
+        edges_parent = root_edges.parent
+
+        e = 0
+        m = 0
+        before = time_.perf_counter()
+        for interval in itertools.pairwise(breaks):
+            children = set()
+            edges = []
+            mutations = []
+
+            while e < len(root_edges) and interval[0] == edges_left[e]:
+                assert interval[1] == edges_right[e]
+                children.add(edges_child[e])
+                edges.append(e)
+                e += 1
+
+            while m < ts.num_mutations and mutations_position[m] < interval[1]:
+                if mutations_node[m] in children:
+                    keep_mutations[m] = False
+                    mutations.append(m)
+                m += 1
+
+            if len(mutations) <= 1:
+                for edge in edges:
+                    self.tables.edges.append(root_edges[edge])
+                for mut in mutations:
+                    self.tables.mutations.append(self.tables.mutations[mut])
+            else:
+                parents = edges_parent[edges]
+                root = parents[0]
+                assert np.all(parents == root)
+                self.infer_binary(
+                    mutations=mutations,
+                    children=children,
+                    root=root,
+                    interval=interval,
+                )
+        wall_time = time_.perf_counter() - before
+        print(f"Loop time: {wall_time:.2f} seconds")
+
+        keep_mutations = keep_mutations[range(len(self.tables.mutations))]
+        self.tables.mutations.keep_rows(keep_mutations)
+        self.tables.edges.squash()
+        self.tables.sort()
+        self.tables.build_index()
+        self.tables.compute_mutation_times()
+        self.tables.build_index()
+        self.tables.compute_mutation_parents()
+        return self.tables.tree_sequence()
 

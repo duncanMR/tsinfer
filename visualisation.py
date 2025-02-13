@@ -2,11 +2,6 @@
 Visualisation of the copying process and ancestor generation using PIL
 """
 
-import os
-import sys
-import tempfile
-import ast
-import msprime
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -17,6 +12,18 @@ import tsinfer
 import ipywidgets as widgets
 from IPython.display import display
 from IPython.core.display import HTML
+import os
+import sys
+
+import msprime
+import numpy as np
+import PIL.Image as Image
+import PIL.ImageColor as ImageColor
+import PIL.ImageDraw as ImageDraw
+import PIL.ImageFont as ImageFont
+import svgwrite
+import tempfile
+import tsinfer
 
 
 from matplotlib.patches import Rectangle
@@ -802,3 +809,179 @@ def compare_ancestors(ancestor_dict):
     ax.legend(title="Method")
     plt.show()
 
+class AncestorBuilderViz:
+    """
+    Visualisation for the process of building ancestors.
+    """
+    def __init__(self, sample_data, ancestor_data, width=800, height=400):
+        self.ancestor_data = ancestor_data
+        self.sample_data = sample_data
+        self.width = width
+        self.height = height
+        self.x_pad = 20
+        self.y_pad = 20
+        self.x_unit = (width - 2 * self.x_pad) / sample_data.num_sites
+        self.y_unit = (height - 2 * self.y_pad) / (sample_data.num_samples + 2)
+    def x_trans(self, v):
+        return self.x_pad + v * self.x_unit
+    def y_trans(self, v):
+        return self.height - (self.y_pad + v * self.y_unit)
+    def draw_matrix(self, dwg, focal_sites, ancestor, current_site=None):
+        A_t = self.sample_data.sites_genotypes[:]
+        # Need to remove fixed sites
+        fixed_sites = np.all(A_t == A_t[:, [0]], axis=1)
+        A = (A_t[~fixed_sites]).T
+        n, m = A.shape
+        print(f"Drawing matrix with {n} samples and {m} sites")
+        print(f"Ancestor length = {len(ancestor)}")
+        for site in focal_sites:
+            dwg.add(
+                dwg.rect(
+                    (self.x_trans(site), self.y_trans(n)),
+                    (self.x_unit, n * self.y_unit),
+                    fill="grey",
+                )
+            )
+        labels = dwg.add(dwg.g(font_size=14, text_anchor="middle"))
+        lines = dwg.add(dwg.g(id="lines", stroke="black", stroke_width=3))
+        for x in range(m + 1):
+            a = self.x_trans(x), self.y_trans(0)
+            b = self.x_trans(x), self.y_trans(n)
+            lines.add(dwg.line(a, b))
+        for y in range(n + 1):
+            a = self.x_trans(0), self.y_trans(y)
+            b = self.x_trans(m), self.y_trans(y)
+            lines.add(dwg.line(a, b))
+        for x in range(m):
+            for y in range(n):
+                labels.add(
+                    dwg.text(
+                        str(A[y, x]), (self.x_trans(x + 0.5), self.y_trans(y + 0.5))
+                    )
+                )
+        y = n + 1
+        for x in range(m):
+            labels.add(
+                dwg.text(
+                    str(ancestor[x]), (self.x_trans(x + 0.5), self.y_trans(y + 0.5))
+                )
+            )
+    def draw(self, ancestor_id):
+        anc = self.ancestor_data.ancestor(ancestor_id)
+        focal_sites = anc.focal_sites
+        start = anc.start
+        end = anc.end
+        a = np.full(self.sample_data.num_sites, -1, dtype=int)
+        a[start:end] = anc.haplotype
+        dwg = svgwrite.Drawing(size=(self.width, self.height), debug=True)
+        self.draw_matrix(dwg, focal_sites, a)
+        # with open(filename_pattern.format(0), "w") as f:
+        #    f.write(dwg.tostring())
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as f:
+            f.write(dwg.tostring().encode("utf-8"))
+            temp_filename = f.name
+        display(SVG(filename=temp_filename))
+
+
+def draw_edges(ts, width=800, height=600):
+    """
+    Returns an SVG depiction of the edges in the specified tree sequence.
+    """
+    dwg = svgwrite.Drawing(size=(width, height), debug=True)
+    x_pad = 20
+    y_pad = 20
+    x_unit = (width - 2 * x_pad) / ts.sequence_length
+    y_unit = (height - 2 * y_pad) / (ts.num_nodes + 1)
+
+    def x_trans(v):
+        return x_pad + v * x_unit
+
+    def y_trans(v):
+        return height - (y_pad + v * y_unit)
+
+    lines = dwg.add(dwg.g(id="lines", stroke="black", stroke_width=3))
+    left_labels = dwg.add(dwg.g(font_size=14, text_anchor="start"))
+    mid_labels = dwg.add(dwg.g(font_size=14, text_anchor="middle"))
+    for u in range(ts.num_nodes):
+        left_labels.add(dwg.text(str(u), (0, y_trans(u))))
+    for x in ts.breakpoints():
+        dwg.add(
+            dwg.line(
+                (x_trans(x), 2 * y_pad),
+                (x_trans(x), height),
+                stroke="grey",
+                stroke_width=1,
+            )
+        )
+        dwg.add(dwg.text(str(x), (x_trans(x), y_pad), writing_mode="tb"))
+
+    for edge in ts.edges():
+        a = x_trans(edge.left), y_trans(edge.child)
+        b = x_trans(edge.right), y_trans(edge.child)
+        c = x_trans(edge.left + (edge.right - edge.left) / 2), y_trans(edge.child) - 5
+        mid_labels.add(dwg.text(str(edge.parent), c))
+        dwg.add(dwg.circle(center=a, r=3, fill="black"))
+        dwg.add(dwg.circle(center=b, r=3, fill="black"))
+        lines.add(dwg.line(a, b))
+
+    for site in ts.sites():
+        assert len(site.mutations) >= 1
+        mutation = site.mutations[0]
+        a = x_trans(site.position), y_trans(mutation.node)
+        dwg.add(dwg.circle(center=a, r=1, fill="red"))
+        for mutation in site.mutations[1:]:
+            a = x_trans(site.position), y_trans(mutation.node)
+            dwg.add(dwg.circle(center=a, r=1, fill="blue"))
+
+    return dwg.tostring()
+
+
+def draw_ancestors(ts, width=800, height=600):
+    """
+    Returns an SVG depiction of the ancestors in the specified tree sequence.
+    """
+    dwg = svgwrite.Drawing(size=(width, height), debug=True)
+    x_pad = 20
+    y_pad = 20
+    x_unit = (width - 2 * x_pad) / ts.sequence_length
+    y_unit = (height - 2 * y_pad) / (ts.num_nodes + 1)
+
+    def x_trans(v):
+        return x_pad + v * x_unit
+
+    def y_trans(v):
+        return height - (y_pad + v * y_unit)
+
+    lines = dwg.add(dwg.g(id="lines", stroke="black", stroke_width=3))
+    left_labels = dwg.add(dwg.g(font_size=14, text_anchor="start"))
+    mid_labels = dwg.add(dwg.g(font_size=14, text_anchor="middle"))
+    for u in range(ts.num_nodes):
+        left_labels.add(dwg.text(str(u), (0, y_trans(u))))
+    for x in ts.breakpoints():
+        dwg.add(
+            dwg.line(
+                (x_trans(x), 2 * y_pad),
+                (x_trans(x), height),
+                stroke="grey",
+                stroke_width=1,
+            )
+        )
+        dwg.add(dwg.text(f"{x}", (x_trans(x), y_pad), writing_mode="tb"))
+
+    for e in ts.edgesets():
+        a = x_trans(e.left), y_trans(e.parent)
+        b = x_trans(e.right), y_trans(e.parent)
+        c = x_trans(e.left + (e.right - e.left) / 2), y_trans(e.parent) - 5
+        mid_labels.add(dwg.text(str(e.children), c))
+        dwg.add(dwg.circle(center=a, r=3, fill="black"))
+        dwg.add(dwg.circle(center=b, r=3, fill="black"))
+        lines.add(dwg.line(a, b))
+
+    for site in ts.sites():
+        mutation = site.mutations[0]
+        a = x_trans(site.position), y_trans(mutation.node)
+        dwg.add(dwg.circle(center=a, r=1, fill="red"))
+        for mutation in site.mutations[1:]:
+            a = x_trans(site.position), y_trans(mutation.node)
+            dwg.add(dwg.circle(center=a, r=1, fill="blue"))
+    return dwg.tostring()
