@@ -64,16 +64,13 @@ class Ancestor:
     end = attr.ib()
     focal_sites = attr.ib()
     full_haplotype = attr.ib()
-    full_sample_counts = attr.ib()
+    sample_set_by_site = attr.ib()
     min_sample_count = attr.ib()
 
     @property
     def haplotype(self):
         return self.full_haplotype[self.start : self.end]
     
-    @property
-    def sample_counts(self):
-        return self.full_sample_counts[self.start : self.end]
 
     def __eq__(self, other):
         return (
@@ -90,7 +87,7 @@ spec = [
     ("genotype_store", int8[:]),
     ("sample_func", types.FunctionType(int64(int64))),
     ("full_haplotype", int8[:]),
-    ("full_sample_counts", int32[:]),
+    ("sample_set_by_site", int32[:, :]),
     ("min_sample_count", int32),
     ("start", int32),
     ("end", int32),
@@ -107,7 +104,7 @@ class NumbaAncestorBuilder:
         self.sample_func = sample_func
         self.freq_threshold = freq_threshold
         self.full_haplotype = np.full(self.num_sites, -1, dtype=np.int8)
-        self.full_sample_counts = np.full(self.num_sites, -1, dtype=np.int32)
+        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int32)
         self.min_sample_count = -1
         self.start = -1
         self.end = -1
@@ -134,6 +131,15 @@ class NumbaAncestorBuilder:
         sample_set_size = k
 
         return sample_set, sample_set_size
+    
+    def write_sample_set(self, sample_set, sample_set_size, site):
+        j = 0
+        while j < sample_set_size:
+            #print(self.sample_set_by_site)
+            #print(sample_set[j])
+            #print(site)
+            self.sample_set_by_site[site, sample_set[j]] = 1
+            j += 1
 
     def compute_ancestral_states(self, focal_site, direction):
         """
@@ -148,7 +154,7 @@ class NumbaAncestorBuilder:
         
         focal_time = self.sites_time[focal_site]
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
-        self.full_sample_counts[focal_site] = sample_set_size
+        self.write_sample_set(sample_set, sample_set_size, focal_site)
         assert sample_set_size > 0
 
         last_site = focal_site
@@ -161,7 +167,7 @@ class NumbaAncestorBuilder:
         site_index = focal_site + direction
         while site_index >= 0 and site_index < self.num_sites:
             self.full_haplotype[site_index] = 0
-            self.full_sample_counts[site_index] = sample_set_size
+            self.write_sample_set(sample_set, sample_set_size, site_index)
             last_site = site_index
             if self.sites_time[site_index] > focal_time:
                 ones = 0
@@ -219,7 +225,8 @@ class NumbaAncestorBuilder:
         focal_site = focal_sites[0]
         focal_time = self.sites_time[focal_site]
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
-        self.full_sample_counts[focal_site] = sample_set_size
+        for site in focal_sites:
+            self.write_sample_set(sample_set, sample_set_size, site)
         assert sample_set_size > 0
 
         # Interpolate ancestral haplotype within focal region (i.e. region
@@ -231,7 +238,7 @@ class NumbaAncestorBuilder:
             
             while site_index < focal_sites[k + 1]:
                 self.full_haplotype[site_index] = 0
-                self.full_sample_counts[site_index] = sample_set_size
+                self.write_sample_set(sample_set, sample_set_size, site_index)
                 if self.sites_time[site_index] > focal_time:
                     ones = 0
                     zeros = 0
@@ -258,7 +265,7 @@ class NumbaAncestorBuilder:
         focal_site = focal_sites[0]
         for site in focal_sites:
             self.full_haplotype[site] = 1
-
+        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int32)
         self.compute_between_focal_sites(focal_sites)
 
         # Extend rightwards from rightmost focal site
@@ -462,7 +469,7 @@ class AncestorBuilder:
                 end=self.builder.end,
                 focal_sites=focal_sites,
                 full_haplotype=self.builder.full_haplotype,
-                full_sample_counts=self.builder.full_sample_counts,
+                sample_set_by_site=self.builder.sample_set_by_site,
                 min_sample_count=self.builder.min_sample_count,
             )
         elif self.method == "alternative":

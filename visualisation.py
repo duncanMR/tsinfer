@@ -985,3 +985,238 @@ def draw_ancestors(ts, width=800, height=600):
             a = x_trans(site.position), y_trans(mutation.node)
             dwg.add(dwg.circle(center=a, r=1, fill="blue"))
     return dwg.tostring()
+
+
+from IPython.display import HTML, display
+import numpy as np
+import tskit
+
+import ipywidgets as widgets
+
+class AncesterBuilderViz:
+    def __init__(self, sample_data, true_anc, inferred_anc, anc_df,
+                 label_col_width=120, cell_width=30, cell_height=30, filler_height=15):
+        self.sample_data = sample_data
+        self.true_anc = true_anc
+        self.inferred_anc = inferred_anc
+        self.inference_sites = np.searchsorted(sample_data.sites_position, inferred_anc.sites_position)
+        self.genotypes = sample_data.sites_genotypes[self.inference_sites, :].T
+        self.num_samples = sample_data.num_samples
+        self.num_sites = self.genotypes.shape[1]
+        self.inferred_haplotypes = inferred_anc.ancestors_full_haplotype[:, :, 0].T
+        assert self.genotypes.shape[1] == self.inferred_haplotypes.shape[1]
+        anc_df['focal_AC'] = (anc_df.frequency * sample_data.num_samples).astype('int')
+        anc_df.set_index('inferred_index', inplace=True, drop=False)
+        self.anc_df = anc_df
+        self.site_AC = np.sum(self.genotypes, axis=0)
+        assert np.array_equal(self.site_AC[anc_df.focal_site_left], anc_df.focal_AC)
+        
+        # Dimension properties
+        self.label_col_width = label_col_width
+        self.cell_width = cell_width
+        self.cell_height = cell_height
+        self.filler_height = filler_height
+
+    def draw_cell(self, parts, row_y, col_index, genotype=None, fill='lightgray', stroke_width=0.5):
+        x = self.label_col_width + col_index * self.cell_width
+        if genotype is not None:
+            parts.append(f'<rect x="{x}" y="{row_y}" width="{self.cell_width}" height="{self.cell_height}" fill="{fill}" stroke="black" stroke-width="{stroke_width}" />')
+            parts.append(f'<text x="{x + self.cell_width/2}" y="{row_y + self.cell_height/2}" text-anchor="middle" alignment-baseline="middle">{genotype}</text>')
+        else:
+            parts.append(f'<rect x="{x}" y="{row_y}" width="{self.cell_width}" height="{self.cell_height}" fill="{fill}" stroke="none"/>')
+
+    def draw_symbol(self, parts, row_y, col_index, genotype, color):
+        x_center = self.label_col_width + col_index * self.cell_width + self.cell_width/2
+        y_center = row_y + self.cell_height/2
+        r = self.cell_width * 0.4
+        if genotype == 1:
+            parts.append(f'<circle cx="{x_center}" cy="{y_center}" r="{r}" fill="{color}" stroke="black" stroke-width="1" />')
+            parts.append(f'<text x="{x_center}" y="{y_center}" text-anchor="middle" alignment-baseline="middle" font-weight="bold" fill="black">1</text>')
+        else:
+            pts = f'{x_center},{y_center - r} {x_center + r},{y_center} {x_center},{y_center + r} {x_center - r},{y_center}'
+            parts.append(f'<polygon points="{pts}" fill="{color}" stroke="black" stroke-width="1" />')
+            parts.append(f'<text x="{x_center}" y="{y_center}" text-anchor="middle" alignment-baseline="middle" font-weight="bold" fill="black">0</text>')
+
+    def draw_header_row(self, parts, label, values, y, inf_sites, border_color='black', text_color='black'):
+        parts.append(f'<rect x="0" y="{y}" width="{self.label_col_width}" height="{self.cell_height}" fill="white" stroke="{border_color}" />')
+        parts.append(f'<text x="{self.label_col_width/2}" y="{y + self.cell_height/2}" text-anchor="middle" alignment-baseline="middle" font-weight="bold" fill="{text_color}">{label}</text>')
+        for j, val in enumerate(values):
+            x = self.label_col_width + j * self.cell_width
+            if inf_sites[j] and border_color != 'none':
+                fill_color = '#e6e8f0'
+            else:
+                fill_color = 'white'
+            parts.append(f'<rect x="{x}" y="{y}" width="{self.cell_width}" height="{self.cell_height}" fill="{fill_color}" stroke="{border_color}" />')
+            style = 'font-weight:bold;' if inf_sites[j] else ''
+            parts.append(f'<text x="{x + self.cell_width/2}" y="{y + self.cell_height/2}" text-anchor="middle" alignment-baseline="middle" style="{style}" fill="{text_color}">{val}</text>')
+
+
+    def draw_line(self, parts, col_index, row_y, row_index=0):
+        top = row_y + (self.cell_height/2 if row_index == 0 else 0)
+        bottom = row_y + self.cell_height + self.filler_height
+        x = self.label_col_width + col_index * self.cell_width + self.cell_width/2
+        parts.append(f'<line x1="{x}" y1="{top}" x2="{x}" y2="{bottom}" stroke="black" stroke-width="5" />')
+
+    def visualise_ancestor(self, anc_id, min_sample_count=None):
+        inferred_left, inferred_right = self.anc_df.loc[anc_id, ['inferred_site_left', 'inferred_site_right']]
+        focal_AC = self.anc_df.loc[anc_id, 'focal_AC']
+        
+        sample_set_selector = self.anc_df.sample_set_by_site[anc_id].T
+        sample_count = np.sum(sample_set_selector, axis=0)
+        if min_sample_count is None:
+            min_sample_count = self.anc_df.loc[anc_id, 'min_sample_count']
+            inferred_left, inferred_right = self.anc_df.loc[anc_id, ['inferred_site_left', 'inferred_site_right']]
+        else:
+            sample_count_selector = sample_count >= min_sample_count
+            indices = np.where(sample_count_selector)[0]
+            assert indices.size > 0
+            inferred_left = indices[0]
+            inferred_right = indices[-1]
+            sample_set_selector[:, :inferred_left] = False
+            sample_set_selector[:, inferred_right+1:] = False
+        
+        focal_site_list = self.anc_df.loc[anc_id, 'focal_site_list']
+        focal_sites_selector = np.zeros(self.num_sites, dtype=bool)
+        focal_sites_selector[focal_site_list] = True
+        num_samples, num_sites = self.genotypes.shape
+        ancestor_haplotype = self.inferred_haplotypes[anc_id, :]
+        
+        sites = np.arange(self.num_sites)
+        ancestor_extent_selector = (inferred_left <= sites) & (sites <= inferred_right)
+        inference_sites_selector = (self.site_AC > focal_AC) & ancestor_extent_selector
+        
+        true_full_haplotype = self.anc_df.loc[anc_id, 'true_haplotype']
+        true_haplotype = true_full_haplotype[self.inference_sites]
+        assert len(true_haplotype) == num_sites
+        errors = (true_haplotype != ancestor_haplotype) & (true_haplotype != tskit.MISSING_DATA)
+        
+        header_height = 2 * self.cell_height
+        inferred_row_height = self.cell_height
+        true_row_height = self.cell_height
+        # Increase gap between genotype rows and inferred haplotype to twice filler_height
+        # (i.e. add an extra filler_height)
+        inferred_y = header_height + num_samples*(self.cell_height + self.filler_height) + self.filler_height
+        total_width = self.label_col_width + num_sites * self.cell_width
+        total_height = header_height + num_samples*(self.cell_height + self.filler_height) + inferred_row_height + true_row_height + self.filler_height
+
+        parts = []
+        parts.append(f'<svg width="{total_width}" height="{total_height}" xmlns="http://www.w3.org/2000/svg" style="font-family: sans-serif;">')
+        # Headers
+        self.draw_header_row(parts, label="Site Index", values=list(range(num_sites)), y=0, inf_sites=inference_sites_selector, border_color='none')
+        self.draw_header_row(parts, label="Site AC", values=list(self.site_AC), y=self.cell_height, inf_sites=inference_sites_selector)
+                
+        # Genotypes
+        for i in range(num_samples):
+            row_y = header_height + i * (self.cell_height + self.filler_height)
+            parts.append(f'<rect x="0" y="{row_y}" width="{self.label_col_width}" height="{self.cell_height}" fill="white" stroke="black" />')
+            parts.append(f'<text x="{self.label_col_width/2}" y="{row_y+self.cell_height/2}" text-anchor="middle" alignment-baseline="middle">{i}</text>')
+            for j in range(num_sites):
+                genotype = self.genotypes[i, j]
+                if sample_set_selector[i, j]:
+                    self.draw_cell(parts, row_y, j, genotype, fill='lightskyblue')
+                    if inference_sites_selector[j]:
+                        self.draw_line(parts, j, row_y, row_index=i)
+                        consensus = ancestor_haplotype[j]
+                        if genotype == consensus:
+                            self.draw_symbol(parts, row_y, j, genotype, color='orange')
+                        else:
+                            self.draw_symbol(parts, row_y, j, genotype, color='red')
+                    elif focal_sites_selector[j]:
+                        self.draw_line(parts, j, row_y, row_index=i)
+                        self.draw_symbol(parts, row_y, j, genotype, color='royalblue')
+                else:
+                    if inference_sites_selector[j] or focal_sites_selector[j]:
+                        self.draw_line(parts, j, row_y, row_index=i)
+                        self.draw_cell(parts, row_y, j, genotype, fill='white', stroke_width=1)
+                    else:
+                        self.draw_cell(parts, row_y, j, genotype, fill='white')
+            gap_y = row_y + self.cell_height
+            parts.append(f'<rect x="0" y="{gap_y}" width="{total_width}" height="{self.filler_height}" fill="none" />')
+        
+        parts.append(f'<rect x="0" y="{inferred_y}" width="{self.label_col_width}" height="{inferred_row_height}" fill="white" stroke="black" />')
+        parts.append(f'<text x="{self.label_col_width/2}" y="{inferred_y+inferred_row_height/2}" text-anchor="middle" alignment-baseline="middle">Inferred haplotype</text>')
+        gap_top = header_height + num_samples*(self.cell_height + self.filler_height)
+        for j in range(num_sites):
+            if inference_sites_selector[j] or focal_sites_selector[j]:
+                x_center = self.label_col_width + j*self.cell_width + self.cell_width/2
+                y_inferred_mid = inferred_y + self.cell_height/2
+                parts.append(f'<line x1="{x_center}" y1="{gap_top}" x2="{x_center}" y2="{y_inferred_mid}" stroke="black" stroke-width="5" />')
+        for j in range(num_sites):
+            genotype = ancestor_haplotype[j]
+            if genotype == tskit.MISSING_DATA:
+                self.draw_cell(parts, inferred_y, j, genotype=None, fill='none')
+            else:
+                self.draw_cell(parts, inferred_y, j, genotype=genotype, fill='#b6b8c2', stroke_width=2)
+                if inference_sites_selector[j]:
+                    self.draw_symbol(parts, inferred_y, j, genotype, color='orange')
+                elif focal_sites_selector[j]:
+                    self.draw_symbol(parts, inferred_y, j, genotype, color='royalblue')
+        
+        true_y = inferred_y + inferred_row_height + self.filler_height
+        parts.append(f'<rect x="0" y="{true_y}" width="{self.label_col_width}" height="{true_row_height}" fill="white" stroke="black" />')
+        parts.append(f'<text x="{self.label_col_width/2}" y="{true_y+true_row_height/2}" text-anchor="middle" alignment-baseline="middle">True haplotype</text>')
+        for j in range(num_sites):
+            genotype = true_haplotype[j]
+            if genotype == tskit.MISSING_DATA:
+                self.draw_cell(parts, true_y, j, genotype=None, fill='none')
+            else:
+                if errors[j]:
+                    if inference_sites_selector[j]:
+                        self.draw_symbol(parts, true_y, j, genotype, color='red')
+                    else:
+                        self.draw_cell(parts, true_y, j, genotype=genotype, fill='lightcoral', stroke_width=2)
+                else:
+                    self.draw_cell(parts, true_y, j, genotype=genotype, fill='#89c48f', stroke_width=2)       
+                    if inference_sites_selector[j]:
+                        self.draw_symbol(parts, true_y, j, genotype, color='orange')
+                    elif focal_sites_selector[j]:
+                        self.draw_symbol(parts, true_y, j, genotype, color='royalblue')            
+        
+        parts.append("</svg>")
+        svg_str = "".join(parts)
+        return svg_str
+
+    
+    def visualise(self):
+        import ipywidgets as widgets
+        from IPython.display import display, clear_output
+        anc_id_widget = widgets.IntText(value=2, description='Ancestor ID:')
+        left_button = widgets.Button(description='Left')
+        right_button = widgets.Button(description='Right')
+        min_sample_widget = widgets.IntText(
+            value=self.anc_df.loc[anc_id_widget.value, 'min_sample_count'],
+            description='Min Sample Count:')
+        svg_out = widgets.HTML(value="")
+        scroll_container = widgets.Box([svg_out],
+            layout=widgets.Layout(overflow_x='auto', border='1px solid gray', width='2000px'))
+        controls = widgets.HBox([left_button, anc_id_widget, right_button, min_sample_widget])
+        container = widgets.VBox([controls, scroll_container])
+        
+        def update_svg(*args):
+            default_min = self.anc_df.loc[anc_id_widget.value, 'min_sample_count']
+            focal_AC = self.anc_df.loc[anc_id_widget.value, 'focal_AC']
+            # Force min_sample_count to be at least default_min and at most focal_AC
+            if min_sample_widget.value < default_min:
+                min_sample_widget.value = default_min
+            elif min_sample_widget.value > focal_AC:
+                min_sample_widget.value = focal_AC
+            svg_str = self.visualise_ancestor(anc_id_widget.value, min_sample_count=min_sample_widget.value)
+            svg_out.value = svg_str if svg_str is not None else ""
+        
+        def on_left_clicked(b):
+            anc_id_widget.value = max(0, anc_id_widget.value - 1)
+            min_sample_widget.value = self.anc_df.loc[anc_id_widget.value, 'min_sample_count']
+            update_svg()
+        
+        def on_right_clicked(b):
+            anc_id_widget.value += 1
+            min_sample_widget.value = self.anc_df.loc[anc_id_widget.value, 'min_sample_count']
+            update_svg()
+        
+        anc_id_widget.observe(lambda change: update_svg() if change['name'] == 'value' else None, names='value')
+        min_sample_widget.observe(lambda change: update_svg() if change['name'] == 'value' else None, names='value')
+        left_button.on_click(on_left_clicked)
+        right_button.on_click(on_right_clicked)
+        print('blah')
+        display(container)
+        update_svg()

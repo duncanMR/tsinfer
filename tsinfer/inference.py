@@ -1596,7 +1596,6 @@ class AncestorsGenerator:
                 anc = self.ancestor_builder.make_ancestor(focal_sites)
                 duration = time_.perf_counter() - before
                 if self.log_anc is True:
-                    sample_counts = anc.sample_counts.copy()
                     focal_pos = sites_position[np.array(focal_sites)]
                     inferred_pos_left = sites_position[anc.start]
                     inferred_pos_right = sites_position[anc.end]
@@ -1611,9 +1610,8 @@ class AncestorsGenerator:
                             "inferred_pos_left": inferred_pos_left,
                             "inferred_pos_right": inferred_pos_right,
                             "inferred_pos_span": inferred_pos_span,
-                            "sample_counts": sample_counts,
                             "min_sample_count": anc.min_sample_count,
-                            "max_sample_count": anc.sample_counts.max(),
+                            "sample_set_by_site": anc.sample_set_by_site,
                             "frequency": t,
                             "num_focal_sites": len(focal_sites),
                             "focal_site_list": list(focal_sites),
@@ -3538,7 +3536,7 @@ class NewResolver:
         order = np.argsort(root_edges.left)
         root_edges.replace_with(root_edges[order])
 
-        keep_mutations = np.ones(2 * ts.num_mutations, dtype=bool)
+        keep_mutations = np.ones(2 * ts.num_mutations, dtype=bool) #extend at end
         mutations_position = ts.sites_position[ts.mutations_site]
         assert np.array_equal(mutations_position, np.sort(mutations_position))
         mutations_node = ts.mutations_node

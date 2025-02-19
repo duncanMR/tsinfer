@@ -219,6 +219,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
     true_pos_span = {}
     true_time = {}
     true_node = {}
+    true_haplotype = {}
     # find the left and right edges of the overlap - iterate by true time in reverse
     for i, focal_pos in enumerate(
         sorted(
@@ -294,6 +295,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
         inferred_node[focal_pos] = inferred_index
         true_node[focal_pos] = true_index
         true_time[focal_pos] = true_anc.ancestors_time[:][true_index]
+        true_haplotype[focal_pos] = true_full_hap
         sites_freq = inferred_freq[olap_start_estim:olap_end_estim]
         higher_freq = sites_freq[small_inferred_mask] > freq[focal_pos]
         olap_n_should_be_1_higher_freq[focal_pos] = np.sum(should_be_1 & higher_freq)
@@ -340,6 +342,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
                 olap_n_should_be_0_low_eq_freq[p],
                 t,
                 true_time[p],
+                true_haplotype[p],
             )
             for t, p in enumerate(sorted(shared_positions, key=lambda x: true_time[x]))
         ],
@@ -366,6 +369,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
             "err_lowfreq_should_be_0",
             "true_time_order",
             "true_time",
+            "true_haplotype",
         ),
     )
 
@@ -433,8 +437,9 @@ def run_anc_evaluation(
     df, inferred_ts, anc_ts, extended_anc_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=num_threads)
     df['inferred_overlap_ratio'] = df.inferred_site_span / df.overlap_site_span
     df['true_overlap_ratio'] =  df.true_site_span / df.overlap_site_span
-    return df, inferred_ts
-
+    df['focal_AC'] = (df.frequency * sample_data.num_samples).astype('int')
+    df.set_index('inferred_index', inplace=True, drop=False)
+    return sample_data, true_anc, inferred_anc, inferred_ts, df
 @njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):
     num_edges = edges_left.shape[0]
