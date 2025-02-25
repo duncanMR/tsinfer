@@ -100,6 +100,7 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
 
     # get_ancestor_descriptors ensures that the ultimate ancestor is included.
     ancestors, start, end, focal_sites = get_ancestor_descriptors(A)
+    print(focal_sites)
     N = len(ancestors)
     if time_chunking:
         time = np.zeros(N)
@@ -128,7 +129,7 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
         )
 
 def generate_true_and_inferred_ancestors(
-    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1
+    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1, one_site_per_anc=False,
 ):
     """
     Run a simulation under args and return the samples, plus the true and the inferred
@@ -143,6 +144,7 @@ def generate_true_and_inferred_ancestors(
         sample_func=sample_func,
         freq_threshold=freq_threshold,
         progress_monitor=True,
+        one_site_per_anc=one_site_per_anc,
     )
     true_anc = tsinfer.AncestorData(
         sample_data.sites_position, sample_data.sequence_length
@@ -427,18 +429,18 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
     return df, inferred_ts, anc_ts, extended_anc_ts
 
 def run_anc_evaluation(
-    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1, num_threads=12,
+    ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1, num_threads=12, one_site_per_anc=False,
 ):
     sample_data, true_anc, inferred_anc, anc_df = generate_true_and_inferred_ancestors(
         ts, engine=engine, sample_frac=sample_frac, sample_func=sample_func, 
-        freq_threshold=freq_threshold
+        freq_threshold=freq_threshold, one_site_per_anc=False
     )
     print('Comparing true vs inferred ancestors')
     df, inferred_ts, anc_ts, extended_anc_ts = compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, num_threads=num_threads)
     df['inferred_overlap_ratio'] = df.inferred_site_span / df.overlap_site_span
     df['true_overlap_ratio'] =  df.true_site_span / df.overlap_site_span
     df['focal_AC'] = (df.frequency * sample_data.num_samples).astype('int')
-    df.set_index('inferred_index', inplace=True, drop=False)
+   # df.set_index('true_index', inplace=True, drop=False)
     return sample_data, true_anc, inferred_anc, inferred_ts, df
 @njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):

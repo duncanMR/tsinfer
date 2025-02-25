@@ -153,6 +153,7 @@ class NumbaAncestorBuilder:
         """
         
         focal_time = self.sites_time[focal_site]
+        print(focal_time)
         sample_set, sample_set_size = self.get_consistent_samples(focal_site)
         self.write_sample_set(sample_set, sample_set_size, focal_site)
         assert sample_set_size > 0
@@ -166,6 +167,7 @@ class NumbaAncestorBuilder:
         disagree = np.full(self.num_samples, False)
         site_index = focal_site + direction
         while site_index >= 0 and site_index < self.num_sites:
+
             self.full_haplotype[site_index] = 0
             self.write_sample_set(sample_set, sample_set_size, site_index)
             last_site = site_index
