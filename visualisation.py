@@ -557,7 +557,7 @@ def plot_ancestor_boxplot(
         y_units = 'bp'
     else:
         raise ValueError("type must be 'site' or 'pos'")
-    
+    which 
     if var == 'span':
         if 'true_site_span' in df.columns:
             vars=[f'true_{type}_span', f'inferred_{type}_span', f'copied_{type}_span']
@@ -1002,7 +1002,7 @@ import tskit
 import ipywidgets as widgets
 
 class AncesterBuilderViz:
-    def __init__(self, sample_data, true_anc, inferred_anc, df_in,
+    def __init__(self, sample_data, true_anc, inferred_anc, df_in, inferred_anc_old=None,
                  label_col_width=50, cell_width=30, cell_height=30, filler_width=15):
         self.sample_data = sample_data
         self.true_anc = true_anc
@@ -1012,6 +1012,10 @@ class AncesterBuilderViz:
         self.num_samples = sample_data.num_samples
         self.num_sites = self.genotypes.shape[0]
         self.inferred_haplotypes = inferred_anc.ancestors_full_haplotype[:, :, 0]
+        if inferred_anc_old is not None:
+            self.inferred_haplotypes_old = inferred_anc_old.ancestors_full_haplotype
+        else:  
+            self.inferred_haplotypes_old = None
         assert self.genotypes.shape[0] == self.inferred_haplotypes.shape[0] #same no. sites
         df = df_in.copy()
         df['focal_AC'] = (df.frequency * sample_data.num_samples).astype('int')
@@ -1121,10 +1125,11 @@ class AncesterBuilderViz:
         true_haplotype = true_full_haplotype[self.inference_sites]
         assert len(true_haplotype) == num_sites
         errors = (true_haplotype != ancestor_haplotype) & (true_haplotype != tskit.MISSING_DATA)
-        
-        total_width = 2*self.label_col_width + num_samples * (self.cell_width + self.filler_width) + 2*(self.label_col_width + self.filler_width)
+        if self.inferred_haplotypes_old is None:
+            total_width = 2*self.label_col_width + num_samples * (self.cell_width + self.filler_width) + 2*(self.label_col_width + self.filler_width)
+        else:
+            total_width = 2*self.label_col_width + num_samples * (self.cell_width + self.filler_width) + 3*(self.label_col_width + self.filler_width)
         total_height = self.cell_width + num_sites*self.cell_height
-
         parts = []
         parts.append(f'<svg width="{total_width}" height="{total_height}" xmlns="http://www.w3.org/2000/svg" style="font-family: sans-serif;">')
         # Headers
@@ -1200,6 +1205,24 @@ class AncesterBuilderViz:
                 else:
                     self.draw_cell(parts, x, y, genotype, fill='#89c48f', stroke_width=2)
                     if site_type[i] == 2: #inference site
+                        self.draw_symbol(parts, x, y, genotype, color='orange')
+                    elif site_type[i] == 3: #focal site
+                        self.draw_symbol(parts, x, y, genotype, color='royalblue')
+
+        #Prev method ancestor
+        
+        if self.inferred_haplotypes_old is not None:
+            ancestor_haplotype_old = self.inferred_haplotypes_old[:, anc_id]
+            parts.append(f'<text x="{x + self.cell_width/2}" y="{self.cell_height/2}" text-anchor="middle" alignment-baseline="middle">Inferred (old)</text>')
+            x = x + self.cell_width + self.filler_width
+            for i in range(num_sites):
+                y = self.cell_height + i * self.cell_height
+                genotype = ancestor_haplotype_old[i]
+                #in_ancestor = (inferred_left <= i) & (i <= inferred_right)
+                if genotype != tskit.MISSING_DATA:
+                    self.draw_cell(parts, x, y, genotype=genotype, fill='mediumpurple', stroke_width=2)
+                    if site_type[i] == 2: #inference site
+                        self.draw_line(parts, x, y, col_index=-1)
                         self.draw_symbol(parts, x, y, genotype, color='orange')
                     elif site_type[i] == 3: #focal site
                         self.draw_symbol(parts, x, y, genotype, color='royalblue')

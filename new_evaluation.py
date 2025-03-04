@@ -343,7 +343,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
                 olap_n_should_be_0_low_eq_freq[p],
                 t,
                 true_time[p],
-                true_haplotype[p],
+                #true_haplotype[p],
             )
             for t, p in enumerate(sorted(shared_positions, key=lambda x: true_time[x]))
         ],
@@ -370,7 +370,7 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
             "err_lowfreq_should_be_0",
             "true_time_order",
             "true_time",
-            "true_haplotype",
+            #"true_haplotype",
         ),
     )
 
@@ -423,13 +423,13 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
     print("Running inference to add copied intervals")
     anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=num_threads, 
                                         path_compression=False, progress_monitor=True)
-    extended_anc_ts = tsinfer.extend_ancestor_ts(anc_ts, inferred_anc)
-    inferred_ts = tsinfer.match_samples(sample_data, extended_anc_ts, num_threads=num_threads,
+    #extended_anc_ts = tsinfer.extend_ancestor_ts(anc_ts, inferred_anc)
+    inferred_ts = tsinfer.match_samples(sample_data, anc_ts, num_threads=num_threads,
                                             post_process=False,path_compression=False,progress_monitor=True)
     df = add_copied_intervals(inferred_ts, anc_ts, df)
     df.drop_duplicates(subset=["inferred_index", "true_index"], inplace=True)
     #df.set_index("inferred_index", inplace=True, drop=False)
-    return df, inferred_ts, anc_ts, extended_anc_ts
+    return df, inferred_ts, anc_ts, anc_ts
 
 def run_anc_evaluation(
     ts, engine="N", sample_frac=0.5, sample_func=None, freq_threshold=1, num_threads=12, one_site_per_anc=False,

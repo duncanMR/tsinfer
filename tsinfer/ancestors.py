@@ -96,6 +96,7 @@ spec = [
     ("freq_threshold", float64),
     ("site_type", int32[:]),
     ("consensus", int64[:]),
+    ("disagree", boolean[:]),
 ]
 
 @jitclass(spec)
@@ -112,8 +113,9 @@ class NumbaAncestorBuilder:
         self.min_sample_count = -1
         self.start = -1
         self.end = -1
-        self.site_type = np.zeros(self.num_sites, dtype=np.int32)
+        self.site_type = np.zeros(num_sites, dtype=np.int32)
         self.consensus = np.zeros(num_sites, dtype=np.int64)
+        self.disagree = np.zeros(num_samples, dtype=np.bool_)
         
 
     def get_site_genotypes(self, site_id):
@@ -142,9 +144,6 @@ class NumbaAncestorBuilder:
     def write_sample_set(self, sample_set, sample_set_size, site):
         j = 0
         while j < sample_set_size:
-            #print(self.sample_set_by_site)
-            #print(sample_set[j])
-            #print(site)
             self.sample_set_by_site[site, sample_set[j]] = 1
             j += 1
 
@@ -170,7 +169,7 @@ class NumbaAncestorBuilder:
         # Break when we've lost half of the samples
         min_sample_set_size = self.sample_func(sample_set_size)
         self.min_sample_count = min_sample_set_size
-        disagree = np.full(self.num_samples, False)
+        self.disagree.fill(False)
         site_index = focal_site + direction
         while site_index >= 0 and site_index < self.num_sites:
 
@@ -197,7 +196,7 @@ class NumbaAncestorBuilder:
                     while j < sample_set_size:
                         u = sample_set[j]
                         genotype = self.get_site_genotype(site_index, u)
-                        if disagree[u] and (genotype != consensus) and (genotype != -1):
+                        if self.disagree[u] and (genotype != consensus) and (genotype != -1):
                             sample_set[j] = -1
                         j += 1
                     self.full_haplotype[site_index] = consensus
@@ -210,7 +209,7 @@ class NumbaAncestorBuilder:
                         u = sample_set[j]
                         genotype = self.get_site_genotype(site_index, u)
                         if u != -1:
-                            disagree[u] = (genotype != consensus) and (genotype != -1)
+                            self.disagree[u] = (genotype != consensus) and (genotype != -1)
                         j += 1
 
                     # Repack the sample set array
@@ -272,13 +271,14 @@ class NumbaAncestorBuilder:
         Fills out the array a with the haplotype
         return the start and end of an ancestor
         """
-        self.consensus = np.zeros(self.num_sites, dtype=np.int64)
+        self.consensus.fill(0)
+        self.sample_set_by_site.fill(0)
+
         focal_site = focal_sites[0]
         for site in focal_sites:
             self.full_haplotype[site] = 1
             self.consensus[site] = 1
             
-        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int32)
         self.compute_between_focal_sites(focal_sites)
 
         # Extend rightwards from rightmost focal site
@@ -299,13 +299,14 @@ spec = [
     ("genotype_store", int8[:]),
     ("sample_func", types.FunctionType(int64(int64))),
     ("full_haplotype", int8[:]),
-    ("sample_set_by_site", int32[:, :]),
+    ("sample_set_by_site", int8[:, :]),
     ("min_sample_count", int32),
     ("start", int32),
     ("end", int32),
     ("freq_threshold", float64),
     ("site_type", int32[:]),
     ("consensus", int64[:]),
+    ("disagree", boolean[:]),    
 ]
 
 @jitclass(spec)
@@ -318,12 +319,13 @@ class NumbaAncestorBuilderAlt:
         self.sample_func = sample_func
         self.freq_threshold = freq_threshold
         self.full_haplotype = np.full(self.num_sites, -1, dtype=np.int8)
-        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int32)
+        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int8)
         self.min_sample_count = -1
         self.start = -1
         self.end = -1
         self.site_type = np.zeros(self.num_sites, dtype=np.int32)
         self.consensus = np.zeros(num_sites, dtype=np.int64)
+        self.disagree = np.zeros(num_samples, dtype=np.bool_)
 
     def get_site_genotypes(self, site_id):
         start = site_id * self.num_samples
@@ -376,7 +378,7 @@ class NumbaAncestorBuilderAlt:
         # Break when we've lost half of the samples
         min_sample_set_size = self.sample_func(sample_set_size)
         self.min_sample_count = min_sample_set_size
-        disagree = np.full(self.num_samples, False)
+        self.disagree.fill(False)
         site_index = focal_site + direction
         while site_index >= 0 and site_index < self.num_sites:
             self.full_haplotype[site_index] = 0
@@ -400,7 +402,7 @@ class NumbaAncestorBuilderAlt:
                 while j < sample_set_size:
                     u = sample_set[j]
                     genotype = self.get_site_genotype(site_index, u)
-                    if disagree[u] and (genotype != consensus) and (genotype != -1):
+                    if self.disagree[u] and (genotype != consensus) and (genotype != -1):
                         sample_set[j] = -1
                     j += 1
                 
@@ -427,7 +429,7 @@ class NumbaAncestorBuilderAlt:
                         u = sample_set[j]
                         genotype = self.get_site_genotype(site_index, u)
                         if u != -1:
-                            disagree[u] = (genotype != consensus) and (genotype != -1)
+                            self.disagree[u] = (genotype != consensus) and (genotype != -1)
                         j += 1
 
                 # Repack the sample set array
@@ -489,14 +491,14 @@ class NumbaAncestorBuilderAlt:
         Fills out the array a with the haplotype
         return the start and end of an ancestor
         """
-        self.site_type = np.zeros(self.num_sites, dtype=np.int32)
-        self.consensus = np.zeros(self.num_sites, dtype=np.int64)
+        self.site_type.fill(0)
+        self.consensus.fill(0)
         focal_site = focal_sites[0]
         for site in focal_sites:
             self.full_haplotype[site] = 1
             self.site_type[site] = 3
             self.consensus[site] = 1
-        self.sample_set_by_site = np.zeros((self.num_sites, self.num_samples), dtype=np.int32)
+        self.sample_set_by_site.fill(0)
         self.compute_between_focal_sites(focal_sites)
 
         # Extend rightwards from rightmost focal site
