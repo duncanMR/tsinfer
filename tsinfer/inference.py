@@ -1512,12 +1512,24 @@ class AncestorsGenerator:
                 one_site_per_anc=one_site_per_anc,
             )
         elif engine == constants.NUMBA_ALT_ENGINE:
+            if sample_func is None:
+                sample_frac = self.sample_frac
+
+                @njit
+                def sample_func(sample_set_size):
+                    return math.floor(sample_set_size * sample_frac)
+
+                self.sample_func = sample_func
+
             logger.debug("Using alternative Numba AncestorBuilder implementation")
             self.ancestor_builder = ancestors.AncestorBuilder(
                 self.num_samples,
                 self.max_sites,
                 genotype_encoding=genotype_encoding,
                 method="alternative",
+                sample_func=sample_func,
+                freq_threshold=freq_threshold,
+                one_site_per_anc=one_site_per_anc,
             )
         else:
             raise ValueError(f"Unknown engine:{engine}")
@@ -1587,7 +1599,7 @@ class AncestorsGenerator:
             logger.info(self.ancestor_builder.print_state(return_str=True))
 
     def _run_synchronous(self, progress):
-        if self.engine == constants.NUMBA_ENGINE:
+        if (self.engine == constants.NUMBA_ENGINE) or (self.engine == constants.NUMBA_ALT_ENGINE):
             sites_position = self.ancestor_data.sites_position[:]
             sites_position = np.append(sites_position, self.sample_data.sequence_length)
             anc_list = []
@@ -1626,6 +1638,8 @@ class AncestorsGenerator:
                             "sample_frac": self.sample_frac,
                             "freq_threshold": self.freq_threshold,
                             "one_site_per_anc": self.one_site_per_anc,
+                            "site_type": anc.site_type,
+                            "consensus": anc.consensus,
                         }
                     )
                 self.ancestor_data.add_ancestor(

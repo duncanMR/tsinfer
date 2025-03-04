@@ -100,7 +100,6 @@ def build_simulated_ancestors(ancestor_data, ts, time_chunking=False):
 
     # get_ancestor_descriptors ensures that the ultimate ancestor is included.
     ancestors, start, end, focal_sites = get_ancestor_descriptors(A)
-    print(focal_sites)
     N = len(ancestors)
     if time_chunking:
         time = np.zeros(N)
@@ -416,6 +415,10 @@ def compare_true_vs_inferred_anc(sample_data, true_anc, inferred_anc, anc_df, nu
             ]
         ].sum()
     )
+    df['site_left_overshoot'] = df['true_site_left'] - df['inferred_site_left']
+    df['site_right_overshoot'] = df['inferred_site_right'] - df['true_site_right']
+    df['pos_left_overshoot'] = df['true_pos_left'] - df['inferred_pos_left']
+    df['pos_right_overshoot'] = df['inferred_pos_right'] - df['true_pos_right']
     
     print("Running inference to add copied intervals")
     anc_ts = tsinfer.match_ancestors(sample_data, inferred_anc, num_threads=num_threads, 
@@ -442,6 +445,7 @@ def run_anc_evaluation(
     df['focal_AC'] = (df.frequency * sample_data.num_samples).astype('int')
    # df.set_index('true_index', inplace=True, drop=False)
     return sample_data, true_anc, inferred_anc, inferred_ts, df
+
 @njit
 def extract_copying_data(num_nodes, edges_left, edges_right, edges_parent, node_subset):
     num_edges = edges_left.shape[0]
