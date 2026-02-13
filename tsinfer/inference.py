@@ -526,6 +526,7 @@ def match_ancestors(
     progress_monitor=None,
     extended_checks=False,
     weight_by_n=True,
+    hmm_likelihood_log=None,
     time_units=None,
     record_provenance=True,
 ):
@@ -584,6 +585,7 @@ def match_ancestors(
             likelihood_threshold=likelihood_threshold,
             extended_checks=extended_checks,
             weight_by_n=weight_by_n,
+            hmm_likelihood_log=hmm_likelihood_log,
             engine=engine,
             progress_monitor=progress_monitor,
         )
@@ -2090,6 +2092,7 @@ class Matcher:
         likelihood_threshold=None,
         extended_checks=False,
         weight_by_n=True,
+        hmm_likelihood_log=None,
         engine=constants.C_ENGINE,
         progress_monitor=None,
         allow_multiallele=False,
@@ -2106,6 +2109,9 @@ class Matcher:
         self.match_progress = None  # Allocated by subclass
         self.extended_checks = extended_checks
         self.weight_by_n = weight_by_n
+        self.hmm_likelihood_log = hmm_likelihood_log
+        # Reused per-thread across worker calls so we don't recreate C matchers.
+        self._thread_local_data = threading.local()
 
         all_sites = self.variant_data.sites_position[:]
         index = np.searchsorted(all_sites, inference_site_position)
@@ -2229,6 +2235,15 @@ class Matcher:
             self.ancestor_matcher_class = algorithm.AncestorMatcher
         else:
             raise ValueError(f"Unknown engine:{engine}")
+        if self.hmm_likelihood_log is not None:
+            if engine != constants.C_ENGINE:
+                raise ValueError(
+                    "hmm_likelihood_log is only supported with the C engine"
+                )
+            if self.num_threads > 0:
+                raise ValueError(
+                    "hmm_likelihood_log is only supported with num_threads <= 0"
+                )
         self.tree_sequence_builder = None
 
         # Allocate 64K nodes and edges initially. This will double as needed and will
@@ -2319,6 +2334,8 @@ class Matcher:
             extended_checks=self.extended_checks,
             weight_by_n=self.weight_by_n,
         )
+        if self.hmm_likelihood_log is not None:
+            kwargs["hmm_likelihood_log"] = self.hmm_likelihood_log
         return self.ancestor_matcher_class(self.tree_sequence_builder, **kwargs)
 
     def convert_inference_mutations(self, tables):
@@ -2535,7 +2552,7 @@ class AncestorMatcher(Matcher):
 
     def match_locally(self, ancestor_ids):
         def thread_worker_function(ancestor):
-            local_data = threading.local()
+            local_data = self._thread_local_data
             if not hasattr(local_data, "matcher"):
                 local_data.matcher = self.create_matcher_instance()
             result = self.find_path(
@@ -2696,7 +2713,7 @@ class SampleMatcher(Matcher):
         def thread_worker_function(j_haplotype):
             j, haplotype = j_haplotype
             assert len(haplotype) == self.num_sites
-            local_data = threading.local()
+            local_data = self._thread_local_data
             if not hasattr(local_data, "matcher"):
                 local_data.matcher = self.create_matcher_instance()
             logger.info(

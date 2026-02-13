@@ -1300,10 +1300,13 @@ AncestorMatcher_init(AncestorMatcher *self, PyObject *args, PyObject *kwds)
     int extended_checks = 0;
     int weight_by_n = 1;
     static char *kwlist[] = {"tree_sequence_builder", "recombination",
-        "mismatch", "likelihood_threshold", "extended_checks", "weight_by_n", NULL};
+        "mismatch", "likelihood_threshold", "extended_checks", "weight_by_n",
+        "hmm_likelihood_log", NULL};
     TreeSequenceBuilder *tree_sequence_builder = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
+    PyObject *hmm_likelihood_log = Py_None;
+    PyObject *hmm_likelihood_log_path = NULL;
     PyArrayObject *recombination_array = NULL;
     PyArrayObject *mismatch_array = NULL;
     npy_intp *shape;
@@ -1312,10 +1315,10 @@ AncestorMatcher_init(AncestorMatcher *self, PyObject *args, PyObject *kwds)
 
     self->ancestor_matcher = NULL;
     self->tree_sequence_builder = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|dii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|diiO", kwlist,
                 &TreeSequenceBuilderType, &tree_sequence_builder,
                 &recombination, &mismatch, &likelihood_threshold,
-                &extended_checks, &weight_by_n)) {
+                &extended_checks, &weight_by_n, &hmm_likelihood_log)) {
         goto out;
     }
     self->tree_sequence_builder = tree_sequence_builder;
@@ -1368,10 +1371,22 @@ AncestorMatcher_init(AncestorMatcher *self, PyObject *args, PyObject *kwds)
         handle_library_error(err);
         goto out;
     }
+    if (hmm_likelihood_log != Py_None) {
+        if (!PyUnicode_FSConverter(hmm_likelihood_log, &hmm_likelihood_log_path)) {
+            goto out;
+        }
+        err = ancestor_matcher_set_likelihood_log_file(
+            self->ancestor_matcher, PyBytes_AsString(hmm_likelihood_log_path));
+        if (err != 0) {
+            handle_library_error(err);
+            goto out;
+        }
+    }
     ret = 0;
 out:
     Py_XDECREF(recombination_array);
     Py_XDECREF(mismatch_array);
+    Py_XDECREF(hmm_likelihood_log_path);
     return ret;
 }
 

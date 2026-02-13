@@ -19,6 +19,7 @@
 """
 Integrity tests for the low-level module.
 """
+import struct
 import sys
 
 import numpy as np
@@ -77,6 +78,9 @@ class TestAncestorMatcher:
                 _tsinfer.AncestorMatcher(tsb, [1], [1], extended_checks=bad_type)
             with pytest.raises(TypeError):
                 _tsinfer.AncestorMatcher(tsb, [1], [1], precision=bad_type)
+        for bad_type in [1, {}]:
+            with pytest.raises(TypeError):
+                _tsinfer.AncestorMatcher(tsb, [1], [1], hmm_likelihood_log=bad_type)
         for bad_array in [[], [[], []], None, "sdf", [1, 2, 3]]:
             with pytest.raises(ValueError):
                 _tsinfer.AncestorMatcher(tsb, bad_array, [1])
@@ -125,6 +129,80 @@ class TestAncestorMatcher:
         assert list(parent_d) == [n3, n2]
         assert list(left_d) == [2, 0]
         assert list(right_d) == [4, 2]
+
+    def test_hmm_likelihood_log(self, tmp_path):
+        tsb = _tsinfer.TreeSequenceBuilder([2, 2, 2, 2])
+        n0 = tsb.add_node(time=3)
+        n1 = tsb.add_node(time=2)
+        n2 = tsb.add_node(time=1)
+        n3 = tsb.add_node(time=1)
+        tsb.add_path(child=n1, left=[0], right=[4], parent=[n0])
+        tsb.add_path(child=n2, left=[0], right=[2], parent=[n1])
+        tsb.add_path(child=n3, left=[2], right=[4], parent=[n1])
+        tsb.add_mutations(node=n2, site=[0, 1], derived_state=[1, 1])
+        tsb.add_mutations(node=n3, site=[2, 3], derived_state=[1, 1])
+        tsb.freeze_indexes()
+
+        log_path = tmp_path / "hmm_likelihood.bin"
+        matcher = _tsinfer.AncestorMatcher(
+            tsb, [0.01] * 4, [0.2] * 4, hmm_likelihood_log=str(log_path)
+        )
+        h = np.array([1, 1, 1, 1], dtype=np.int8)
+        match = np.zeros(4, dtype=np.int8)
+        matcher.find_path(h, 0, 4, match)
+
+        data = log_path.read_bytes()
+        offset = 0
+
+        magic = data[offset : offset + 8]
+        offset += 8
+        assert magic == b"TSILHMML"
+        version = struct.unpack_from("<I", data, offset)[0]
+        offset += 4
+        assert version == 1
+
+        # PATH_BEGIN
+        record_type = data[offset]
+        offset += 1
+        assert record_type == 1
+        path_id = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        assert path_id == 1
+        start = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        end = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        assert start == 0
+        assert end == 4
+
+        num_site_records = 0
+        while data[offset] == 2:
+            num_site_records += 1
+            offset += 1  # record type
+            site_path_id = struct.unpack_from("<Q", data, offset)[0]
+            offset += 8
+            assert site_path_id == path_id
+            offset += 4
+            k = struct.unpack_from("<I", data, offset)[0]
+            offset += 4
+            assert k > 0
+            offset += 8 * k  # likelihood values
+        assert num_site_records == 4
+
+        # PATH_END
+        assert data[offset] == 3
+        offset += 1
+        end_path_id = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        assert end_path_id == path_id
+        status = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        assert status == 0
+        total_memory = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        assert total_memory > 0
+
+        assert offset == len(data)
 
 
 class TestTreeSequenceBuilder:

@@ -1,7 +1,9 @@
 # Visualisation of the copying process and ancestor generation using PIL
+import math
 import os
 import sys
 
+import matplotlib.pyplot as plt
 import msprime
 import numpy as np
 import PIL.Image as Image
@@ -11,6 +13,133 @@ import PIL.ImageFont as ImageFont
 import svgwrite
 
 import tsinfer
+
+
+def plot_likelihood_nodes(df):
+    """
+    Plot aggregated tracked likelihood nodes (k) by site.
+
+    Expects columns:
+    - site
+    - k
+    - path_id (optional)
+    """
+    required = {"site", "k"}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+
+    stats = (
+        df.groupby("site", sort=True)["k"]
+        .agg(k_mean="mean", k_max="max")
+        .reset_index()
+        .sort_values("site")
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    line_color = "C0"
+    ax.fill_between(
+        stats["site"], 0, stats["k_max"], color=line_color, alpha=0.3, linewidth=0
+    )
+    ax.plot(
+        stats["site"],
+        stats["k_mean"],
+        color=line_color,
+        linewidth=1,
+        label="Mean node count per site",
+    )
+
+    ax.set_xlabel("site")
+    ax.set_ylabel("k")
+    ax.set_title("Tracked Likelihood Nodes per Site")
+    ax.legend()
+    return fig, ax
+
+
+def plot_likelihood_values(df, n_chunks):
+    """
+    Plot proportions of unique likelihood values aggregated into chunks.
+
+    The DataFrame must contain columns ``site`` and ``likelihood``. The sites
+    are sorted, split into ``n_chunks`` roughly equal bins, and proportions
+    of each likelihood value are stacked in a bar per chunk.
+    """
+    if "likelihood" in df.columns:
+        likelihood_col = "likelihood"
+    elif "likelihoods" in df.columns:
+        likelihood_col = "likelihoods"
+    else:
+        raise ValueError("Missing columns for likelihood plot: likelihoods/likelihood")
+
+    required = {"site", likelihood_col}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns for likelihood plot: {missing}")
+    if n_chunks <= 0:
+        raise ValueError("n_chunks must be positive")
+
+    unique_sites = np.sort(df["site"].unique())
+    if unique_sites.size == 0:
+        raise ValueError("DataFrame contains no sites")
+
+    chunk_size = max(1, math.ceil(unique_sites.size / n_chunks))
+    site_to_order = {site: idx for idx, site in enumerate(unique_sites)}
+    chunk_ids = (
+        df["site"].map(site_to_order).floordiv(chunk_size).clip(upper=n_chunks - 1)
+    )
+    df = df.assign(chunk=chunk_ids)
+    if likelihood_col == "likelihoods":
+        # sites_df stores arrays; explode to scalar likelihood values for counting.
+        df = df.explode("likelihoods", ignore_index=True)
+        df = df.rename(columns={"likelihoods": "likelihood"})
+        likelihood_col = "likelihood"
+
+    counts = (
+        df.groupby(["chunk", likelihood_col], sort=False)
+        .size()
+        .unstack(fill_value=0)
+        .reindex(range(n_chunks), fill_value=0)
+    )
+
+    totals = counts.sum(axis=1).replace(0, 1)
+    proportions = counts.div(totals, axis=0)
+
+    chunk_labels = []
+    for chunk in range(n_chunks):
+        first_idx = chunk * chunk_size
+        last_idx = min(first_idx + chunk_size - 1, unique_sites.size - 1)
+        if first_idx >= unique_sites.size:
+            chunk_labels.append("empty")
+            continue
+        start_site = unique_sites[first_idx]
+        end_site = unique_sites[last_idx]
+        chunk_labels.append(f"{start_site}-{end_site}")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    x = np.arange(n_chunks)
+    bottom = np.zeros(n_chunks)
+    colors = plt.get_cmap("tab10")
+    for idx, value in enumerate(sorted(counts.columns)):
+        values = proportions[value].fillna(0).values
+        ax.bar(
+            x,
+            values,
+            bottom=bottom,
+            color=colors(idx % 10),
+            label=str(value),
+            width=0.8,
+        )
+        bottom += values
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(chunk_labels, rotation=45, ha="right")
+    ax.set_xlabel("site chunk (range)")
+    ax.set_ylabel("proportion of likelihoods")
+    ax.set_title("Likelihood value mix per site chunk")
+    ax.legend(title="Likelihood")
+    ax.margins(x=0.01)
+    return fig, ax
 
 
 class AncestorBuilderViz:

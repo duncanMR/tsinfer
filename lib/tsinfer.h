@@ -237,6 +237,16 @@ typedef struct {
     size_t total_traceback_size;
     size_t traceback_block_size;
     size_t traceback_realloc_size;
+    /* Optional binary likelihood log. */
+    FILE *likelihood_log_file;
+    char *likelihood_log_path;
+    uint64_t likelihood_log_path_id;
+    uint64_t likelihood_log_current_path_id;
+    bool likelihood_log_path_active;
+    char *likelihood_log_buffer;
+    size_t likelihood_log_buffer_size;
+    double *likelihood_log_values;
+    size_t likelihood_log_values_size;
     struct {
         tsk_id_t *left;
         tsk_id_t *right;
@@ -266,6 +276,8 @@ int ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
     allele_t *haplotype, allele_t *matched_haplotype, size_t *num_output_edges,
     tsk_id_t **left_output, tsk_id_t **right_output, tsk_id_t **parent_output);
 int ancestor_matcher_print_state(ancestor_matcher_t *self, FILE *out);
+int ancestor_matcher_set_likelihood_log_file(ancestor_matcher_t *self, const char *path);
+int ancestor_matcher_close_likelihood_log_file(ancestor_matcher_t *self);
 double ancestor_matcher_get_mean_traceback_size(ancestor_matcher_t *self);
 size_t ancestor_matcher_get_total_memory(ancestor_matcher_t *self);
 

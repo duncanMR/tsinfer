@@ -25,6 +25,15 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdint.h>
+
+#define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
+#define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
+#define TSI_LIKELIHOOD_LOG_VERSION 1
+#define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
+#define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
+#define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
+#define TSI_LIKELIHOOD_LOG_BUFFER_SIZE (1 << 20)
 
 static inline bool
 is_nonzero_root(const tsk_id_t u, const tsk_id_t *restrict parent,
@@ -57,6 +66,175 @@ ancestor_matcher_check_state(ancestor_matcher_t *self)
         assert(self->allelic_state[u] == TSK_NULL);
     }
     assert(num_likelihoods == self->num_likelihood_nodes);
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_write(ancestor_matcher_t *self, const void *data, size_t size)
+{
+    int ret = 0;
+
+    if (self->likelihood_log_file == NULL) {
+        goto out;
+    }
+    if (fwrite(data, size, 1, self->likelihood_log_file) != 1) {
+        ret = TSI_ERR_IO;
+        goto out;
+    }
+out:
+    return ret;
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_write_u8(ancestor_matcher_t *self, uint8_t value)
+{
+    return ancestor_matcher_log_write(self, &value, sizeof(value));
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_write_u32(ancestor_matcher_t *self, uint32_t value)
+{
+    return ancestor_matcher_log_write(self, &value, sizeof(value));
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_write_i32(ancestor_matcher_t *self, int32_t value)
+{
+    return ancestor_matcher_log_write(self, &value, sizeof(value));
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_write_u64(ancestor_matcher_t *self, uint64_t value)
+{
+    return ancestor_matcher_log_write(self, &value, sizeof(value));
+}
+
+static inline int WARN_UNUSED
+ancestor_matcher_log_ensure_value_buffer(ancestor_matcher_t *self, size_t k)
+{
+    int ret = 0;
+    double *tmp = NULL;
+
+    if (self->likelihood_log_values_size >= k) {
+        goto out;
+    }
+    tmp = realloc(self->likelihood_log_values, k * sizeof(*self->likelihood_log_values));
+    if (tmp == NULL) {
+        ret = TSI_ERR_NO_MEMORY;
+        goto out;
+    }
+    self->likelihood_log_values = tmp;
+    self->likelihood_log_values_size = k;
+out:
+    return ret;
+}
+
+static int WARN_UNUSED
+ancestor_matcher_log_path_begin(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end)
+{
+    int ret = 0;
+
+    if (self->likelihood_log_file == NULL) {
+        goto out;
+    }
+    self->likelihood_log_path_id++;
+    self->likelihood_log_current_path_id = self->likelihood_log_path_id;
+    self->likelihood_log_path_active = true;
+    ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u64(self, self->likelihood_log_current_path_id);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) start);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) end);
+    if (ret != 0) {
+        goto out;
+    }
+out:
+    return ret;
+}
+
+static int WARN_UNUSED
+ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
+{
+    int ret = 0;
+    int j;
+    const int k = self->num_likelihood_nodes;
+    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    const double *restrict L = self->likelihood;
+
+    if (self->likelihood_log_file == NULL) {
+        goto out;
+    }
+    assert(k > 0);
+    ret = ancestor_matcher_log_ensure_value_buffer(self, (size_t) k);
+    if (ret != 0) {
+        goto out;
+    }
+    for (j = 0; j < k; j++) {
+        self->likelihood_log_values[j] = L[L_nodes[j]];
+    }
+
+    ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_SITE_VALUES);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u64(self, self->likelihood_log_current_path_id);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) site);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u32(self, (uint32_t) k);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write(self, self->likelihood_log_values,
+        (size_t) k * sizeof(*self->likelihood_log_values));
+out:
+    return ret;
+}
+
+static int WARN_UNUSED
+ancestor_matcher_log_path_end(ancestor_matcher_t *self, int32_t status)
+{
+    int ret = 0;
+    size_t total_memory;
+
+    if (self->likelihood_log_file == NULL || !self->likelihood_log_path_active) {
+        goto out;
+    }
+    total_memory = ancestor_matcher_get_total_memory(self);
+    ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_PATH_END);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u64(self, self->likelihood_log_current_path_id);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, status);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u64(self, (uint64_t) total_memory);
+    if (ret != 0) {
+        goto out;
+    }
+    if (fflush(self->likelihood_log_file) != 0) {
+        ret = TSI_ERR_IO;
+        goto out;
+    }
+out:
+    self->likelihood_log_path_active = false;
+    return ret;
 }
 
 int
@@ -98,6 +276,99 @@ ancestor_matcher_print_state(ancestor_matcher_t *self, FILE *out)
 
     /* ancestor_matcher_check_state(self); */
     return 0;
+}
+
+int
+ancestor_matcher_set_likelihood_log_file(ancestor_matcher_t *self, const char *path)
+{
+    int ret = 0;
+    uint32_t version = TSI_LIKELIHOOD_LOG_VERSION;
+    FILE *file = NULL;
+    char *path_copy = NULL;
+    char *buffer = NULL;
+
+    ret = ancestor_matcher_close_likelihood_log_file(self);
+    if (ret != 0) {
+        goto out;
+    }
+    if (path == NULL || strlen(path) == 0) {
+        ret = TSI_ERR_IO;
+        goto out;
+    }
+    file = fopen(path, "wb");
+    if (file == NULL) {
+        ret = TSI_ERR_IO;
+        goto out;
+    }
+    buffer = malloc(TSI_LIKELIHOOD_LOG_BUFFER_SIZE);
+    if (buffer != NULL) {
+        if (setvbuf(file, buffer, _IOFBF, TSI_LIKELIHOOD_LOG_BUFFER_SIZE) != 0) {
+            tsi_safe_free(buffer);
+        }
+    }
+    path_copy = malloc(strlen(path) + 1);
+    if (path_copy == NULL) {
+        ret = TSI_ERR_NO_MEMORY;
+        goto out;
+    }
+    memcpy(path_copy, path, strlen(path) + 1);
+
+    self->likelihood_log_file = file;
+    self->likelihood_log_path = path_copy;
+    self->likelihood_log_buffer = buffer;
+    self->likelihood_log_buffer_size
+        = buffer == NULL ? 0 : TSI_LIKELIHOOD_LOG_BUFFER_SIZE;
+    self->likelihood_log_path_id = 0;
+    self->likelihood_log_current_path_id = 0;
+    self->likelihood_log_path_active = false;
+
+    ret = ancestor_matcher_log_write(
+        self, TSI_LIKELIHOOD_LOG_HEADER_MAGIC, TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u32(self, version);
+    if (ret != 0) {
+        goto out;
+    }
+out:
+    if (ret != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        tsi_safe_free(path_copy);
+        tsi_safe_free(buffer);
+        self->likelihood_log_file = NULL;
+        self->likelihood_log_path = NULL;
+        self->likelihood_log_buffer = NULL;
+        self->likelihood_log_buffer_size = 0;
+        self->likelihood_log_path_id = 0;
+        self->likelihood_log_current_path_id = 0;
+        self->likelihood_log_path_active = false;
+    }
+    return ret;
+}
+
+int
+ancestor_matcher_close_likelihood_log_file(ancestor_matcher_t *self)
+{
+    int ret = 0;
+
+    if (self->likelihood_log_file != NULL) {
+        if (fclose(self->likelihood_log_file) != 0) {
+            ret = TSI_ERR_IO;
+        }
+    }
+    self->likelihood_log_file = NULL;
+    self->likelihood_log_path_active = false;
+    self->likelihood_log_path_id = 0;
+    self->likelihood_log_current_path_id = 0;
+    tsi_safe_free(self->likelihood_log_path);
+    tsi_safe_free(self->likelihood_log_buffer);
+    self->likelihood_log_buffer_size = 0;
+    tsi_safe_free(self->likelihood_log_values);
+    self->likelihood_log_values_size = 0;
+    return ret;
 }
 
 int
@@ -150,6 +421,7 @@ out:
 int
 ancestor_matcher_free(ancestor_matcher_t *self)
 {
+    ancestor_matcher_close_likelihood_log_file(self);
     tsi_safe_free(self->recombination_rate);
     tsi_safe_free(self->mismatch_rate);
     tsi_safe_free(self->parent);
@@ -475,6 +747,12 @@ ancestor_matcher_update_site_state(ancestor_matcher_t *self, const tsk_id_t site
         goto out;
     }
     ret = ancestor_matcher_store_traceback(self, site);
+    if (ret != 0) {
+        goto out;
+    }
+    /* Log the full tracked likelihood vector before coalescing, so repeated
+     * values are preserved in the output stream. */
+    ret = ancestor_matcher_log_site_values(self, site);
     if (ret != 0) {
         goto out;
     }
@@ -973,8 +1251,13 @@ ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t en
     tsk_id_t **left_output, tsk_id_t **right_output, tsk_id_t **parent_output)
 {
     int ret = 0;
+    int tmp_ret;
 
     ret = ancestor_matcher_reset(self);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_path_begin(self, start, end);
     if (ret != 0) {
         goto out;
     }
@@ -997,6 +1280,10 @@ ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t en
     *parent_output = self->output.parent;
     *num_output_edges = self->output.size;
 out:
+    tmp_ret = ancestor_matcher_log_path_end(self, ret);
+    if (ret == 0 && tmp_ret != 0) {
+        ret = tmp_ret;
+    }
     return ret;
 }
 
@@ -1010,7 +1297,72 @@ size_t
 ancestor_matcher_get_total_memory(ancestor_matcher_t *self)
 {
     size_t total = self->traceback_allocator.total_size;
-    /* TODO add contributions from other objects */
+    size_t num_sites = self->num_sites;
+    size_t max_nodes = self->max_nodes;
+
+    if (self->recombination_rate != NULL) {
+        total += num_sites * sizeof(*self->recombination_rate);
+    }
+    if (self->mismatch_rate != NULL) {
+        total += num_sites * sizeof(*self->mismatch_rate);
+    }
+    if (self->traceback != NULL) {
+        total += num_sites * sizeof(*self->traceback);
+    }
+    if (self->max_likelihood_node != NULL) {
+        total += num_sites * sizeof(*self->max_likelihood_node);
+    }
+    if (self->output.left != NULL) {
+        total += self->output.max_size * sizeof(*self->output.left);
+    }
+    if (self->output.right != NULL) {
+        total += self->output.max_size * sizeof(*self->output.right);
+    }
+    if (self->output.parent != NULL) {
+        total += self->output.max_size * sizeof(*self->output.parent);
+    }
+    if (self->parent != NULL) {
+        total += max_nodes * sizeof(*self->parent);
+    }
+    if (self->left_child != NULL) {
+        total += max_nodes * sizeof(*self->left_child);
+    }
+    if (self->right_child != NULL) {
+        total += max_nodes * sizeof(*self->right_child);
+    }
+    if (self->left_sib != NULL) {
+        total += max_nodes * sizeof(*self->left_sib);
+    }
+    if (self->right_sib != NULL) {
+        total += max_nodes * sizeof(*self->right_sib);
+    }
+    if (self->recombination_required != NULL) {
+        total += max_nodes * sizeof(*self->recombination_required);
+    }
+    if (self->likelihood != NULL) {
+        total += max_nodes * sizeof(*self->likelihood);
+    }
+    if (self->likelihood_cache != NULL) {
+        total += max_nodes * sizeof(*self->likelihood_cache);
+    }
+    if (self->likelihood_nodes != NULL) {
+        total += max_nodes * sizeof(*self->likelihood_nodes);
+    }
+    if (self->likelihood_nodes_tmp != NULL) {
+        total += max_nodes * sizeof(*self->likelihood_nodes_tmp);
+    }
+    if (self->allelic_state != NULL) {
+        total += max_nodes * sizeof(*self->allelic_state);
+    }
+    if (self->likelihood_log_path != NULL) {
+        total += strlen(self->likelihood_log_path) + 1;
+    }
+    if (self->likelihood_log_buffer != NULL) {
+        total += self->likelihood_log_buffer_size;
+    }
+    if (self->likelihood_log_values != NULL) {
+        total += self->likelihood_log_values_size * sizeof(*self->likelihood_log_values);
+    }
 
     return total;
 }

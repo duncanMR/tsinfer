@@ -27,6 +27,7 @@ import os.path
 import random
 import re
 import string
+import struct
 import sys
 import tempfile
 import unittest
@@ -4329,6 +4330,59 @@ class TestMismatchAndRecombination:
         with pytest.raises(ValueError, match="simultaneously"):
             tsinfer.match_ancestors(
                 sd, anc, recombination=x[1:], mismatch_ratio=1, mismatch=x
+            )
+
+    def test_hmm_likelihood_log(self, small_sd_anc_fixture, tmp_path):
+        sd, anc = small_sd_anc_fixture
+        log_path = tmp_path / "match_ancestors_hmm.bin"
+        ts = tsinfer.match_ancestors(sd, anc, hmm_likelihood_log=log_path)
+        assert ts.num_nodes > 0
+        assert log_path.is_file()
+        data = log_path.read_bytes()
+        assert len(data) > 32
+        assert data[:8] == b"TSILHMML"
+        version = struct.unpack_from("<I", data, 8)[0]
+        assert version == 1
+        offset = 12
+        begin_count = 0
+        end_count = 0
+        while offset < len(data):
+            rec_type = data[offset]
+            offset += 1
+            if rec_type == 1:
+                begin_count += 1
+                offset += 8 + 4 + 4
+            elif rec_type == 2:
+                k = struct.unpack_from("<I", data, offset + 8 + 4)[0]
+                offset += 8 + 4 + 4 + 8 * k
+            elif rec_type == 3:
+                end_count += 1
+                offset += 8 + 4 + 8
+            else:
+                raise AssertionError(f"Unknown record type {rec_type}")
+        assert begin_count > 1
+        assert begin_count == end_count
+
+    def test_hmm_likelihood_log_requires_c_engine(self, small_sd_anc_fixture, tmp_path):
+        sd, anc = small_sd_anc_fixture
+        log_path = tmp_path / "match_ancestors_hmm.bin"
+        with pytest.raises(ValueError, match="only supported with the C engine"):
+            tsinfer.match_ancestors(
+                sd, anc, engine=tsinfer.PY_ENGINE, hmm_likelihood_log=log_path
+            )
+
+    def test_hmm_likelihood_log_requires_single_thread(
+        self, small_sd_anc_fixture, tmp_path
+    ):
+        sd, anc = small_sd_anc_fixture
+        log_path = tmp_path / "match_ancestors_hmm.bin"
+        with pytest.raises(ValueError, match="num_threads <= 0"):
+            tsinfer.match_ancestors(
+                sd,
+                anc,
+                engine=tsinfer.C_ENGINE,
+                num_threads=1,
+                hmm_likelihood_log=log_path,
             )
 
     def test_bad_recombination_rate(self, small_sd_fixture):
