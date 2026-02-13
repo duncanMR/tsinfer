@@ -525,6 +525,7 @@ def match_ancestors(
     engine=constants.C_ENGINE,
     progress_monitor=None,
     extended_checks=False,
+    weight_by_n=True,
     time_units=None,
     record_provenance=True,
 ):
@@ -582,6 +583,7 @@ def match_ancestors(
             precision=precision,
             likelihood_threshold=likelihood_threshold,
             extended_checks=extended_checks,
+            weight_by_n=weight_by_n,
             engine=engine,
             progress_monitor=progress_monitor,
         )
@@ -597,6 +599,7 @@ def match_ancestors(
             mismatch_ratio=mismatch_ratio,
             path_compression=path_compression,
             precision=precision,
+            weight_by_n=weight_by_n,
             # TODO: maybe record recombination rate (which could be a RateMap)
         )
         tables.provenances.add_row(record=json.dumps(record))
@@ -624,6 +627,7 @@ def match_ancestors_batch_init(
     precision=None,
     engine=constants.C_ENGINE,
     extended_checks=False,
+    weight_by_n=True,
     time_units=None,
     record_provenance=True,
 ):
@@ -776,6 +780,7 @@ def match_ancestors_batch_init(
         "precision": precision,
         "engine": engine,
         "extended_checks": extended_checks,
+        "weight_by_n": weight_by_n,
         "time_units": time_units,
         "record_provenance": record_provenance,
         "ancestor_grouping": ancestor_grouping,
@@ -808,6 +813,7 @@ def initialize_ancestor_matcher(metadata, ancestors_ts=None, **kwargs):
         path_compression=metadata["path_compression"],
         precision=metadata["precision"],
         extended_checks=metadata["extended_checks"],
+        weight_by_n=metadata.get("weight_by_n", True),
         engine=metadata["engine"],
         **kwargs,
     )
@@ -1015,6 +1021,7 @@ def match_ancestors_batch_finalise(work_dir):
             mismatch_ratio=metadata["mismatch_ratio"],
             path_compression=metadata["path_compression"],
             precision=metadata["precision"],
+            weight_by_n=metadata.get("weight_by_n", True),
         )
         tables.provenances.add_row(record=json.dumps(record))
     ts = tables.tree_sequence()
@@ -2082,6 +2089,7 @@ class Matcher:
         precision=None,
         likelihood_threshold=None,
         extended_checks=False,
+        weight_by_n=True,
         engine=constants.C_ENGINE,
         progress_monitor=None,
         allow_multiallele=False,
@@ -2097,6 +2105,7 @@ class Matcher:
         self.progress_monitor = _get_progress_monitor(progress_monitor)
         self.match_progress = None  # Allocated by subclass
         self.extended_checks = extended_checks
+        self.weight_by_n = weight_by_n
 
         all_sites = self.variant_data.sites_position[:]
         index = np.searchsorted(all_sites, inference_site_position)
@@ -2303,13 +2312,14 @@ class Matcher:
         return (1 - np.exp(-genetic_distances * ratio * num_alleles)) / num_alleles
 
     def create_matcher_instance(self):
-        return self.ancestor_matcher_class(
-            self.tree_sequence_builder,
+        kwargs = dict(
             recombination=self.recombination,
             mismatch=self.mismatch,
             likelihood_threshold=self.likelihood_threshold,
             extended_checks=self.extended_checks,
+            weight_by_n=self.weight_by_n,
         )
+        return self.ancestor_matcher_class(self.tree_sequence_builder, **kwargs)
 
     def convert_inference_mutations(self, tables):
         """

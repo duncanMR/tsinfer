@@ -699,12 +699,14 @@ class AncestorMatcher:
         mismatch=None,
         likelihood_threshold=None,
         extended_checks=False,
+        weight_by_n=True,
     ):
         self.tree_sequence_builder = tree_sequence_builder
         self.mismatch = mismatch
         self.recombination = recombination
         self.likelihood_threshold = likelihood_threshold
         self.extended_checks = extended_checks
+        self.weight_by_n = weight_by_n
         self.num_sites = tree_sequence_builder.num_sites
         self.parent = None
         self.left_child = None
@@ -794,8 +796,12 @@ class AncestorMatcher:
                 assert v != -1
 
             p_last = self.likelihood[u]
-            p_no_recomb = p_last * (1 - rho + rho / n)
-            p_recomb = rho / n
+            if self.weight_by_n:
+                p_no_recomb = p_last * (1 - rho + rho / n)
+                p_recomb = rho / n
+            else:
+                p_no_recomb = p_last
+                p_recomb = rho
             recombination_required = False
             if p_no_recomb > p_recomb:
                 p_t = p_no_recomb
