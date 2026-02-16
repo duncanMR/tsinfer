@@ -29,7 +29,7 @@
 
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
-#define TSI_LIKELIHOOD_LOG_VERSION 1
+#define TSI_LIKELIHOOD_LOG_VERSION 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
 #define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
@@ -112,18 +112,33 @@ static inline int WARN_UNUSED
 ancestor_matcher_log_ensure_value_buffer(ancestor_matcher_t *self, size_t k)
 {
     int ret = 0;
-    double *tmp = NULL;
+    double *value_tmp = NULL;
+    int32_t *node_tmp = NULL;
 
-    if (self->likelihood_log_values_size >= k) {
+    if (self->likelihood_log_values_size >= k
+        && self->likelihood_log_nodes_size >= k) {
         goto out;
     }
-    tmp = realloc(self->likelihood_log_values, k * sizeof(*self->likelihood_log_values));
-    if (tmp == NULL) {
-        ret = TSI_ERR_NO_MEMORY;
-        goto out;
+    if (self->likelihood_log_values_size < k) {
+        value_tmp = realloc(self->likelihood_log_values,
+            k * sizeof(*self->likelihood_log_values));
+        if (value_tmp == NULL) {
+            ret = TSI_ERR_NO_MEMORY;
+            goto out;
+        }
+        self->likelihood_log_values = value_tmp;
+        self->likelihood_log_values_size = k;
     }
-    self->likelihood_log_values = tmp;
-    self->likelihood_log_values_size = k;
+    if (self->likelihood_log_nodes_size < k) {
+        node_tmp = realloc(
+            self->likelihood_log_nodes, k * sizeof(*self->likelihood_log_nodes));
+        if (node_tmp == NULL) {
+            ret = TSI_ERR_NO_MEMORY;
+            goto out;
+        }
+        self->likelihood_log_nodes = node_tmp;
+        self->likelihood_log_nodes_size = k;
+    }
 out:
     return ret;
 }
@@ -178,6 +193,7 @@ ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
     }
     for (j = 0; j < k; j++) {
         self->likelihood_log_values[j] = L[L_nodes[j]];
+        self->likelihood_log_nodes[j] = (int32_t) L_nodes[j];
     }
 
     ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_SITE_VALUES);
@@ -198,6 +214,11 @@ ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
     }
     ret = ancestor_matcher_log_write(self, self->likelihood_log_values,
         (size_t) k * sizeof(*self->likelihood_log_values));
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write(
+        self, self->likelihood_log_nodes, (size_t) k * sizeof(*self->likelihood_log_nodes));
 out:
     return ret;
 }
@@ -321,6 +342,7 @@ ancestor_matcher_set_likelihood_log_file(ancestor_matcher_t *self, const char *p
     self->likelihood_log_path_id = 0;
     self->likelihood_log_current_path_id = 0;
     self->likelihood_log_path_active = false;
+    self->likelihood_log_nodes_size = 0;
 
     ret = ancestor_matcher_log_write(
         self, TSI_LIKELIHOOD_LOG_HEADER_MAGIC, TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN);
@@ -345,6 +367,7 @@ out:
         self->likelihood_log_path_id = 0;
         self->likelihood_log_current_path_id = 0;
         self->likelihood_log_path_active = false;
+        self->likelihood_log_nodes_size = 0;
     }
     return ret;
 }
@@ -368,6 +391,8 @@ ancestor_matcher_close_likelihood_log_file(ancestor_matcher_t *self)
     self->likelihood_log_buffer_size = 0;
     tsi_safe_free(self->likelihood_log_values);
     self->likelihood_log_values_size = 0;
+    tsi_safe_free(self->likelihood_log_nodes);
+    self->likelihood_log_nodes_size = 0;
     return ret;
 }
 
@@ -1362,6 +1387,9 @@ ancestor_matcher_get_total_memory(ancestor_matcher_t *self)
     }
     if (self->likelihood_log_values != NULL) {
         total += self->likelihood_log_values_size * sizeof(*self->likelihood_log_values);
+    }
+    if (self->likelihood_log_nodes != NULL) {
+        total += self->likelihood_log_nodes_size * sizeof(*self->likelihood_log_nodes);
     }
 
     return total;

@@ -159,7 +159,7 @@ class TestAncestorMatcher:
         assert magic == b"TSILHMML"
         version = struct.unpack_from("<I", data, offset)[0]
         offset += 4
-        assert version == 1
+        assert version == 2
 
         # PATH_BEGIN
         record_type = data[offset]
@@ -187,6 +187,7 @@ class TestAncestorMatcher:
             offset += 4
             assert k > 0
             offset += 8 * k  # likelihood values
+            offset += 4 * k  # likelihood node ids
         assert num_site_records == 4
 
         # PATH_END

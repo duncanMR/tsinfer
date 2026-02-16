@@ -1,11 +1,13 @@
 # Visualisation of the copying process and ancestor generation using PIL
 import math
 import os
+import struct
 import sys
 
 import matplotlib.pyplot as plt
 import msprime
 import numpy as np
+import pandas as pd
 import PIL.Image as Image
 import PIL.ImageColor as ImageColor
 import PIL.ImageDraw as ImageDraw
@@ -15,6 +17,526 @@ import svgwrite
 import tsinfer
 
 
+def load_hmm_log(path):
+    path_begin = {}
+    path_end = {}
+    site_rows = []
+
+    with open(path, "rb") as f:
+        magic = f.read(8)
+        if magic != b"TSILHMML":
+            raise ValueError(f"Bad magic: {magic!r}")
+        version = struct.unpack("<I", f.read(4))[0]
+        if version != 2:
+            raise ValueError(f"Unsupported version: {version}")
+
+        while True:
+            t = f.read(1)
+            if not t:
+                break
+            rec_type = t[0]
+
+            if rec_type == 1:  # PATH_BEGIN
+                ancestor_id, start, end = struct.unpack("<Qii", f.read(16))
+                path_begin[ancestor_id] = {"start": start, "end": end}
+
+            elif rec_type == 2:  # SITE_VALUES
+                ancestor_id, site, k = struct.unpack("<QiI", f.read(16))
+                vals = np.frombuffer(f.read(8 * k), dtype="<f8").copy()
+                node_ids = np.frombuffer(f.read(4 * k), dtype="<i4").copy()
+                site_rows.append(
+                    {
+                        "ancestor_id": ancestor_id,
+                        "site": site,
+                        "k": k,
+                        "likelihoods": vals,
+                        "likelihood_nodes": node_ids,
+                    }
+                )
+
+            elif rec_type == 3:  # PATH_END
+                ancestor_id, status, total_memory = struct.unpack("<QiQ", f.read(20))
+                path_end[ancestor_id] = {"status": status, "total_memory": total_memory}
+
+            else:
+                raise ValueError(f"Unknown record type: {rec_type}")
+
+    sites_df = pd.DataFrame(site_rows)
+
+    ancestor_ids = sorted(set(path_begin) | set(path_end))
+    paths_df = pd.DataFrame(
+        [
+            {
+                "ancestor_id": pid,
+                "start": path_begin.get(pid, {}).get("start"),
+                "end": path_begin.get(pid, {}).get("end"),
+                "status": path_end.get(pid, {}).get("status"),
+                "total_memory": path_end.get(pid, {}).get("total_memory"),
+            }
+            for pid in ancestor_ids
+        ]
+    )
+
+    return sites_df, paths_df
+
+
+def make_long_df(df, anc_data):
+    """
+    Flatten per-site likelihood arrays into one row per likelihood value.
+
+    Input columns:
+    - ancestor_id
+    - site
+    - k
+    - likelihoods
+    - likelihood_nodes
+
+    Output columns:
+    - ancestor_id
+    - site
+    - k
+    - full_likelihood
+    - likelihood
+    - likelihood_node_id
+    """
+    required = {"ancestor_id", "site", "k", "likelihoods", "likelihood_nodes"}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+
+    if len(df) == 0:
+        raise ValueError("Input DataFrame is empty")
+
+    df["ancestor_time"] = anc_data.ancestors_time[df["ancestor_id"]]
+
+    k = df["k"].to_numpy(dtype=np.int64, copy=False)
+    if np.any(k < 0):
+        raise ValueError("Column 'k' must be non-negative")
+
+    likelihoods = df["likelihoods"].to_numpy(dtype=object, copy=False)
+    likelihood_nodes = df["likelihood_nodes"].to_numpy(dtype=object, copy=False)
+
+    # Validate payload lengths once to fail early on malformed rows.
+    like_lens = np.fromiter(
+        (len(x) for x in likelihoods), dtype=np.int64, count=len(df)
+    )
+    node_lens = np.fromiter(
+        (len(x) for x in likelihood_nodes), dtype=np.int64, count=len(df)
+    )
+    if not np.array_equal(like_lens, k):
+        raise ValueError("Lengths in 'likelihoods' do not match column 'k'")
+    if not np.array_equal(node_lens, k):
+        raise ValueError("Lengths in 'likelihood_nodes' do not match column 'k'")
+
+    if k.sum() == 0:
+        return pd.DataFrame(
+            {
+                "ancestor_id": pd.Series(dtype=df["ancestor_id"].dtype),
+                "ancestor_time": pd.Series(dtype=df["ancestor_time"].dtype),
+                "site": pd.Series(dtype=df["site"].dtype),
+                "k": pd.Series(dtype=np.int64),
+                "full_likelihood": pd.Series(dtype=np.float64),
+                "likelihood_node_id": pd.Series(dtype=np.int32),
+                "likelihood": pd.Series(dtype=np.int8),
+            }
+        )
+
+    likelihood_flat = np.concatenate(likelihoods)
+    long_df = pd.DataFrame(
+        {
+            "ancestor_id": np.repeat(df["ancestor_id"].to_numpy(copy=False), k),
+            "ancestor_time": np.repeat(df["ancestor_time"].to_numpy(copy=False), k),
+            "site": np.repeat(df["site"].to_numpy(copy=False), k),
+            "k": np.repeat(k, k),
+            "full_likelihood": likelihood_flat,
+            "likelihood_node_id": np.concatenate(likelihood_nodes),
+            "likelihood": np.equal(likelihood_flat, 1.0).astype(np.int8),
+        }
+    )
+    return long_df
+
+
+def summarise_likelihoods(df, ancestor_id, likelihood_node_id, genome_length):
+    likelihood_col = "likelihood"
+    required = {"ancestor_id", "site", "likelihood_node_id", likelihood_col}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    if genome_length <= 0:
+        raise ValueError("genome_length must be positive")
+
+    ancestor_arr = np.atleast_1d(ancestor_id)
+    node_arr = np.atleast_1d(likelihood_node_id)
+    if ancestor_arr.size > 1 and node_arr.size > 1:
+        raise ValueError("One of ancestor_id or likelihood_node_id must be scalar")
+    if ancestor_arr.size == 1:
+        ancestor_arr = np.repeat(ancestor_arr, node_arr.size)
+    else:
+        node_arr = np.repeat(node_arr, ancestor_arr.size)
+
+    targets = pd.DataFrame(
+        {
+            "ancestor_id": ancestor_arr.astype(np.int64, copy=False),
+            "likelihood_node_id": node_arr.astype(np.int64, copy=False),
+        }
+    )
+    targets = targets.drop_duplicates(ignore_index=True)
+
+    work = df.loc[:, ["ancestor_id", "site", "likelihood_node_id", likelihood_col]]
+    work = work.merge(targets, how="inner", on=["ancestor_id", "likelihood_node_id"])
+    if len(work) == 0:
+        out = targets.copy()
+        out["site_start"] = np.nan
+        out["site_end"] = np.nan
+        out["site_span_incl_gaps"] = 0.0
+        out["likelihood_start"] = np.nan
+        out["num_switches"] = 0
+        out["num_gaps"] = 0
+        out["site_span_excl_gaps"] = 0.0
+        out["site_span_is_0"] = 0.0
+        out["site_span_is_1"] = 0.0
+        out["num_0_to_1_transitions"] = 0
+        out["num_1_to_0_transitions"] = 0
+        out["prop_is_0"] = np.nan
+        out["prop_is_1"] = np.nan
+        out["coverage_prop_incl_gaps"] = 0.0
+        out["coverage_prop_excl_gaps"] = 0.0
+        return out
+
+    work = work.sort_values(
+        ["ancestor_id", "likelihood_node_id", "site"], kind="mergesort"
+    )
+    if work.duplicated(["ancestor_id", "likelihood_node_id", "site"]).any():
+        raise ValueError("Found duplicate (ancestor_id, likelihood_node_id, site) rows")
+
+    g = work.groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)
+    prev_site = g["site"].shift()
+    site_step = work["site"] - prev_site
+    run_break = site_step.ne(1) | site_step.isna()
+    prev_like = g[likelihood_col].shift()
+    like_change = work[likelihood_col].ne(prev_like) & prev_like.notna()
+    work = work.assign(
+        run_break=run_break,
+        like_change=like_change,
+        is_0_to_1=(prev_like == 0) & (work[likelihood_col] == 1),
+        is_1_to_0=(prev_like == 1) & (work[likelihood_col] == 0),
+    )
+    g2 = work.groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)
+    work["run_id"] = g2["run_break"].cumsum()
+    work["state_id"] = g2["run_break"].cumsum() + g2["like_change"].cumsum()
+
+    summary = g2.agg(
+        site_start=("site", "first"),
+        site_end=("site", "last"),
+        likelihood_start=(likelihood_col, "first"),
+        num_switches=("like_change", "sum"),
+        num_0_to_1_transitions=("is_0_to_1", "sum"),
+        num_1_to_0_transitions=("is_1_to_0", "sum"),
+    ).reset_index()
+    summary["site_span_incl_gaps"] = summary["site_end"] - summary["site_start"]
+
+    runs = (
+        work.groupby(
+            ["ancestor_id", "likelihood_node_id", "run_id"], sort=False, observed=True
+        )["site"]
+        .agg(run_start="first", run_end="last")
+        .reset_index()
+    )
+    runs["run_span"] = runs["run_end"] - runs["run_start"]
+    run_stats = runs.groupby(
+        ["ancestor_id", "likelihood_node_id"], sort=False, observed=True
+    ).agg(
+        num_runs=("run_id", "size"),
+        site_span_excl_gaps=("run_span", "sum"),
+    )
+    run_stats["num_gaps"] = run_stats["num_runs"] - 1
+    run_stats = run_stats.drop(columns=["num_runs"]).reset_index()
+
+    states = (
+        work.groupby(
+            ["ancestor_id", "likelihood_node_id", "state_id", likelihood_col],
+            sort=False,
+            observed=True,
+        )["site"]
+        .agg(seg_start="first", seg_end="last")
+        .reset_index()
+    )
+    states["seg_span"] = states["seg_end"] - states["seg_start"]
+    span_0 = (
+        states.loc[states[likelihood_col] == 0]
+        .groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)[
+            "seg_span"
+        ]
+        .sum()
+        .rename("site_span_is_0")
+        .reset_index()
+    )
+    span_1 = (
+        states.loc[states[likelihood_col] == 1]
+        .groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)[
+            "seg_span"
+        ]
+        .sum()
+        .rename("site_span_is_1")
+        .reset_index()
+    )
+
+    out = targets.merge(summary, how="left", on=["ancestor_id", "likelihood_node_id"])
+    out = out.merge(run_stats, how="left", on=["ancestor_id", "likelihood_node_id"])
+    out = out.merge(span_0, how="left", on=["ancestor_id", "likelihood_node_id"])
+    out = out.merge(span_1, how="left", on=["ancestor_id", "likelihood_node_id"])
+
+    for col in [
+        "num_switches",
+        "num_0_to_1_transitions",
+        "num_1_to_0_transitions",
+        "num_gaps",
+    ]:
+        out[col] = out[col].fillna(0).astype(np.int64)
+    for col in ["site_span_excl_gaps", "site_span_is_0", "site_span_is_1"]:
+        out[col] = out[col].fillna(0.0)
+    out["site_span_incl_gaps"] = out["site_span_incl_gaps"].fillna(0.0)
+    out["coverage_prop_incl_gaps"] = out["site_span_incl_gaps"] / float(genome_length)
+    out["coverage_prop_excl_gaps"] = out["site_span_excl_gaps"] / float(genome_length)
+
+    denom = out["site_span_excl_gaps"].to_numpy(dtype=np.float64, copy=False)
+    out["prop_is_0"] = np.divide(
+        out["site_span_is_0"].to_numpy(dtype=np.float64, copy=False),
+        denom,
+        out=np.zeros(out.shape[0], dtype=np.float64),
+        where=denom > 0,
+    )
+    out["prop_is_1"] = np.divide(
+        out["site_span_is_1"].to_numpy(dtype=np.float64, copy=False),
+        denom,
+        out=np.zeros(out.shape[0], dtype=np.float64),
+        where=denom > 0,
+    )
+    return out[
+        [
+            "ancestor_id",
+            "likelihood_node_id",
+            "site_start",
+            "site_end",
+            "site_span_incl_gaps",
+            "likelihood_start",
+            "num_switches",
+            "num_gaps",
+            "site_span_excl_gaps",
+            "site_span_is_0",
+            "site_span_is_1",
+            "num_0_to_1_transitions",
+            "num_1_to_0_transitions",
+            "prop_is_0",
+            "prop_is_1",
+            "coverage_prop_incl_gaps",
+            "coverage_prop_excl_gaps",
+        ]
+    ]
+
+
+def summarise_all_likelihoods(df):
+    required = {"ancestor_id", "site", "likelihood_node_id", "likelihood"}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    has_ancestor_time = "ancestor_time" in df.columns
+
+    columns = [
+        "ancestor_id",
+        "likelihood_node_id",
+        "site_start",
+        "site_end",
+        "site_span_incl_gaps",
+        "likelihood_start",
+        "num_switches",
+        "num_gaps",
+        "site_span_excl_gaps",
+        "site_span_is_0",
+        "site_span_is_1",
+        "num_0_to_1_transitions",
+        "num_1_to_0_transitions",
+        "prop_is_0",
+        "prop_is_1",
+        "coverage_prop_incl_gaps",
+        "coverage_prop_excl_gaps",
+    ]
+    if has_ancestor_time:
+        columns = ["ancestor_id", "ancestor_time"] + columns[1:]
+    if len(df) == 0:
+        return pd.DataFrame(columns=columns)
+
+    genome_length = int(df["site"].max()) + 1
+    work_cols = ["ancestor_id", "site", "likelihood_node_id", "likelihood"]
+    if has_ancestor_time:
+        work_cols.insert(1, "ancestor_time")
+    work = df.loc[:, work_cols]
+    work = work.sort_values(
+        ["ancestor_id", "likelihood_node_id", "site"], kind="mergesort"
+    )
+    if work.duplicated(["ancestor_id", "likelihood_node_id", "site"]).any():
+        raise ValueError("Found duplicate (ancestor_id, likelihood_node_id, site) rows")
+
+    g = work.groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)
+    prev_site = g["site"].shift()
+    site_step = work["site"] - prev_site
+    run_break = site_step.ne(1) | site_step.isna()
+    prev_like = g["likelihood"].shift()
+    like_change = work["likelihood"].ne(prev_like) & prev_like.notna()
+    work = work.assign(
+        run_break=run_break,
+        like_change=like_change,
+        is_0_to_1=(prev_like == 0) & (work["likelihood"] == 1),
+        is_1_to_0=(prev_like == 1) & (work["likelihood"] == 0),
+    )
+    g2 = work.groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)
+    work["run_id"] = g2["run_break"].cumsum()
+    work["state_id"] = g2["run_break"].cumsum() + g2["like_change"].cumsum()
+
+    summary_aggs = {
+        "site_start": ("site", "first"),
+        "site_end": ("site", "last"),
+        "likelihood_start": ("likelihood", "first"),
+        "num_switches": ("like_change", "sum"),
+        "num_0_to_1_transitions": ("is_0_to_1", "sum"),
+        "num_1_to_0_transitions": ("is_1_to_0", "sum"),
+    }
+    if has_ancestor_time:
+        summary_aggs["ancestor_time"] = ("ancestor_time", "first")
+    out = g2.agg(**summary_aggs).reset_index()
+    out["site_span_incl_gaps"] = out["site_end"] - out["site_start"]
+
+    runs = (
+        work.groupby(
+            ["ancestor_id", "likelihood_node_id", "run_id"], sort=False, observed=True
+        )["site"]
+        .agg(run_start="first", run_end="last")
+        .reset_index()
+    )
+    runs["run_span"] = runs["run_end"] - runs["run_start"]
+    run_stats = runs.groupby(
+        ["ancestor_id", "likelihood_node_id"], sort=False, observed=True
+    ).agg(
+        num_runs=("run_id", "size"),
+        site_span_excl_gaps=("run_span", "sum"),
+    )
+    run_stats["num_gaps"] = run_stats["num_runs"] - 1
+    run_stats = run_stats.drop(columns=["num_runs"]).reset_index()
+
+    states = (
+        work.groupby(
+            ["ancestor_id", "likelihood_node_id", "state_id", "likelihood"],
+            sort=False,
+            observed=True,
+        )["site"]
+        .agg(seg_start="first", seg_end="last")
+        .reset_index()
+    )
+    states["seg_span"] = states["seg_end"] - states["seg_start"]
+    span_0 = (
+        states.loc[states["likelihood"] == 0]
+        .groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)[
+            "seg_span"
+        ]
+        .sum()
+        .rename("site_span_is_0")
+        .reset_index()
+    )
+    span_1 = (
+        states.loc[states["likelihood"] == 1]
+        .groupby(["ancestor_id", "likelihood_node_id"], sort=False, observed=True)[
+            "seg_span"
+        ]
+        .sum()
+        .rename("site_span_is_1")
+        .reset_index()
+    )
+
+    out = out.merge(run_stats, how="left", on=["ancestor_id", "likelihood_node_id"])
+    out = out.merge(span_0, how="left", on=["ancestor_id", "likelihood_node_id"])
+    out = out.merge(span_1, how="left", on=["ancestor_id", "likelihood_node_id"])
+
+    for col in [
+        "num_switches",
+        "num_0_to_1_transitions",
+        "num_1_to_0_transitions",
+        "num_gaps",
+    ]:
+        out[col] = out[col].fillna(0).astype(np.int64)
+    for col in ["site_span_excl_gaps", "site_span_is_0", "site_span_is_1"]:
+        out[col] = out[col].fillna(0.0)
+    out["site_span_incl_gaps"] = out["site_span_incl_gaps"].fillna(0.0)
+
+    out["coverage_prop_incl_gaps"] = out["site_span_incl_gaps"] / float(genome_length)
+    out["coverage_prop_excl_gaps"] = out["site_span_excl_gaps"] / float(genome_length)
+
+    denom = out["site_span_excl_gaps"].to_numpy(dtype=np.float64, copy=False)
+    out["prop_is_0"] = np.divide(
+        out["site_span_is_0"].to_numpy(dtype=np.float64, copy=False),
+        denom,
+        out=np.zeros(out.shape[0], dtype=np.float64),
+        where=denom > 0,
+    )
+    out["prop_is_1"] = np.divide(
+        out["site_span_is_1"].to_numpy(dtype=np.float64, copy=False),
+        denom,
+        out=np.zeros(out.shape[0], dtype=np.float64),
+        where=denom > 0,
+    )
+    return out[columns]
+
+
+def sample_likelihoods_by_id(df, by, id, num_samples, seed=1):
+    required = {"ancestor_id", "site", "likelihood_node_id", "likelihood"}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    if by not in {"ancestor", "node"}:
+        raise ValueError("by must be 'ancestor' or 'node'")
+    if num_samples < 0:
+        raise ValueError("num_samples must be non-negative")
+    if len(df) == 0:
+        return summarise_likelihoods(
+            df, ancestor_id=[], likelihood_node_id=[], genome_length=1
+        )
+
+    genome_length = int(df["site"].max()) + 1
+    rng = np.random.default_rng(seed)
+
+    if by == "ancestor":
+        subset_df = df.loc[df["ancestor_id"] == id]
+        candidates = subset_df["likelihood_node_id"].drop_duplicates().to_numpy()
+        if num_samples >= candidates.size:
+            sampled_ids = np.sort(candidates)
+        else:
+            sampled_ids = np.sort(
+                rng.choice(candidates, size=num_samples, replace=False)
+            )
+        return summarise_likelihoods(
+            subset_df,
+            ancestor_id=id,
+            likelihood_node_id=sampled_ids,
+            genome_length=genome_length,
+        )
+
+    subset_df = df.loc[df["likelihood_node_id"] == id]
+    candidates = subset_df["ancestor_id"].drop_duplicates().to_numpy()
+    if num_samples >= candidates.size:
+        sampled_ids = np.sort(candidates)
+    else:
+        sampled_ids = np.sort(rng.choice(candidates, size=num_samples, replace=False))
+    return summarise_likelihoods(
+        subset_df,
+        ancestor_id=sampled_ids,
+        likelihood_node_id=id,
+        genome_length=genome_length,
+    )
+
+
 def plot_likelihood_nodes(df):
     """
     Plot aggregated tracked likelihood nodes (k) by site.
@@ -22,7 +544,7 @@ def plot_likelihood_nodes(df):
     Expects columns:
     - site
     - k
-    - path_id (optional)
+    - ancestor_id (optional)
     """
     required = {"site", "k"}
     missing = required.difference(df.columns)
@@ -85,15 +607,13 @@ def plot_likelihood_values(df, n_chunks):
 
     chunk_size = max(1, math.ceil(unique_sites.size / n_chunks))
     site_to_order = {site: idx for idx, site in enumerate(unique_sites)}
-    chunk_ids = (
+    if likelihood_col == "likelihoods":
+        # sites_df stores arrays; flatten with vectorized repeat/concatenate.
+        df = make_long_df(df)
+        likelihood_col = "likelihood"
+    df["chunk"] = (
         df["site"].map(site_to_order).floordiv(chunk_size).clip(upper=n_chunks - 1)
     )
-    df = df.assign(chunk=chunk_ids)
-    if likelihood_col == "likelihoods":
-        # sites_df stores arrays; explode to scalar likelihood values for counting.
-        df = df.explode("likelihoods", ignore_index=True)
-        df = df.rename(columns={"likelihoods": "likelihood"})
-        likelihood_col = "likelihood"
 
     counts = (
         df.groupby(["chunk", likelihood_col], sort=False)
@@ -134,12 +654,177 @@ def plot_likelihood_values(df, n_chunks):
 
     ax.set_xticks(x)
     ax.set_xticklabels(chunk_labels, rotation=45, ha="right")
-    ax.set_xlabel("site chunk (range)")
-    ax.set_ylabel("proportion of likelihoods")
-    ax.set_title("Likelihood value mix per site chunk")
+    ax.set_xlabel("Genomic region (discrete sites)")
+    ax.set_ylabel("Proportion of nodes")
+    ax.set_title("Likelihood distribution by region across all ancestors")
     ax.legend(title="Likelihood")
     ax.margins(x=0.01)
     return fig, ax
+
+
+def boxplot_by_epoch(df, num_epochs, variable, log_y=False):
+    required = {"ancestor_time", variable}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    if num_epochs <= 0:
+        raise ValueError("num_epochs must be positive")
+
+    work = df.loc[:, ["ancestor_time", variable]].dropna()
+    if len(work) == 0:
+        raise ValueError("No rows available after dropping NaNs")
+    if (work["ancestor_time"] <= 0).any():
+        raise ValueError(
+            "ancestor_time must be strictly positive for log-spaced epochs"
+        )
+
+    log_time = np.log10(work["ancestor_time"].to_numpy(dtype=np.float64, copy=False))
+    edges = np.linspace(log_time.min(), log_time.max(), num_epochs + 1)
+    epoch = np.digitize(log_time, edges[1:-1], right=False).astype(np.int64)
+    work = work.assign(epoch=epoch)
+
+    grouped = work.groupby("epoch", sort=True)[variable]
+    epochs = np.arange(num_epochs)
+    data = [
+        grouped.get_group(i).to_numpy(copy=False) for i in epochs if i in grouped.groups
+    ]
+    positions = [int(i) + 1 for i in epochs if i in grouped.groups]
+    labels = [
+        f"{10 ** edges[i]:.2g}-{10 ** edges[i + 1]:.2g}"
+        for i in epochs
+        if i in grouped.groups
+    ]
+    if len(data) == 0:
+        raise ValueError("No non-empty epochs available to plot")
+
+    fig, ax = plt.subplots(figsize=(max(8, 0.8 * len(data)), 4))
+    ax.boxplot(data, positions=positions, widths=0.6, showfliers=True)
+    ax.set_xlabel("epoch")
+    ax.set_ylabel(variable)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_title(f"{variable} by log-spaced ancestor-time epoch")
+    if log_y:
+        ax.set_yscale("log")
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_prop_by_epoch(df, num_epochs, num_bins, variable, log_y=False):
+    required = {"ancestor_time", variable}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    if num_epochs <= 0:
+        raise ValueError("num_epochs must be positive")
+    if num_bins <= 0:
+        raise ValueError("num_bins must be positive")
+
+    work = df.loc[:, ["ancestor_time", variable]].dropna()
+    if len(work) == 0:
+        raise ValueError("No rows available after dropping NaNs")
+    if (work["ancestor_time"] <= 0).any():
+        raise ValueError(
+            "ancestor_time must be strictly positive for log-spaced epochs"
+        )
+
+    log_time = np.log10(work["ancestor_time"].to_numpy(dtype=np.float64, copy=False))
+    edges = np.linspace(log_time.min(), log_time.max(), num_epochs + 1)
+    epoch = np.digitize(log_time, edges[1:-1], right=False).astype(np.int64)
+    work = work.assign(epoch=epoch)
+
+    grouped = work.groupby("epoch", sort=True)[variable]
+    epoch_ids = [i for i in range(num_epochs) if i in grouped.groups]
+    if len(epoch_ids) == 0:
+        raise ValueError("No non-empty epochs available to plot")
+
+    fig, axes = plt.subplots(
+        1,
+        len(epoch_ids),
+        figsize=(max(8, 3.2 * len(epoch_ids)), 3.6),
+        sharey=True,
+        constrained_layout=True,
+    )
+    if len(epoch_ids) == 1:
+        axes = [axes]
+
+    for ax, i in zip(axes, epoch_ids):
+        values = grouped.get_group(i).to_numpy(copy=False)
+        ax.hist(values, bins=num_bins, density=True, color="C0", alpha=0.8)
+        ax.set_title(f"{10 ** edges[i]:.2g}-{10 ** edges[i + 1]:.2g}")
+        ax.set_xlabel(variable)
+        ax.set_ylabel("density")
+        if log_y:
+            ax.set_yscale("log")
+
+    fig.suptitle(f"{variable} distribution by ancestor time epoch")
+    return fig, axes
+
+
+def plot_count_by_epoch(df, num_epochs, num_bins, variable, log_y=False):
+    required = {"ancestor_time", variable}
+    missing = required.difference(df.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame missing required columns: {missing_str}")
+    if num_epochs <= 0:
+        raise ValueError("num_epochs must be positive")
+    if num_bins <= 0:
+        raise ValueError("num_bins must be positive")
+
+    work = df.loc[:, ["ancestor_time", variable]].dropna()
+    if len(work) == 0:
+        raise ValueError("No rows available after dropping NaNs")
+    if (work["ancestor_time"] <= 0).any():
+        raise ValueError(
+            "ancestor_time must be strictly positive for log-spaced epochs"
+        )
+
+    values = work[variable].to_numpy(copy=False)
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{variable} contains non-finite values")
+    if not np.all(values == np.floor(values)):
+        raise ValueError(f"{variable} must be integer-valued for count plots")
+
+    log_time = np.log10(work["ancestor_time"].to_numpy(dtype=np.float64, copy=False))
+    edges = np.linspace(log_time.min(), log_time.max(), num_epochs + 1)
+    epoch = np.digitize(log_time, edges[1:-1], right=False).astype(np.int64)
+    work = work.assign(epoch=epoch, value_int=values.astype(np.int64, copy=False))
+
+    grouped = work.groupby("epoch", sort=True)["value_int"]
+    epoch_ids = [i for i in range(num_epochs) if i in grouped.groups]
+    if len(epoch_ids) == 0:
+        raise ValueError("No non-empty epochs available to plot")
+
+    fig, axes = plt.subplots(
+        1,
+        len(epoch_ids),
+        figsize=(max(8, 3.2 * len(epoch_ids)), 3.8),
+        sharey=True,
+        constrained_layout=True,
+    )
+    if len(epoch_ids) == 1:
+        axes = [axes]
+
+    x = np.arange(num_bins + 1)
+    x_labels = [str(i) for i in range(num_bins)] + [f">={num_bins}"]
+    for ax, i in zip(axes, epoch_ids):
+        vals = grouped.get_group(i).to_numpy(dtype=np.int64, copy=False)
+        vals = np.minimum(vals, num_bins)
+        counts = np.bincount(vals, minlength=num_bins + 1)
+        ax.bar(x, counts, color="C0", alpha=0.85)
+        ax.set_title(f"{10 ** edges[i]:.2g}-{10 ** edges[i + 1]:.2g}")
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels, rotation=45, ha="right")
+        ax.set_xlabel(variable)
+        ax.set_ylabel("count")
+        if log_y:
+            ax.set_yscale("log")
+
+    fig.suptitle(f"{variable} counts by ancestor time epoch")
+    return fig, axes
 
 
 class AncestorBuilderViz:
