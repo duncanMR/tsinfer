@@ -29,10 +29,11 @@
 
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
-#define TSI_LIKELIHOOD_LOG_VERSION 2
+#define TSI_LIKELIHOOD_LOG_VERSION 3
 #define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
 #define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
+#define TSI_LIKELIHOOD_LOG_REC_SELECTED_NODE 4
 #define TSI_LIKELIHOOD_LOG_BUFFER_SIZE (1 << 20)
 
 static inline bool
@@ -114,9 +115,11 @@ ancestor_matcher_log_ensure_value_buffer(ancestor_matcher_t *self, size_t k)
     int ret = 0;
     double *value_tmp = NULL;
     int32_t *node_tmp = NULL;
+    int8_t *recombination_tmp = NULL;
 
     if (self->likelihood_log_values_size >= k
-        && self->likelihood_log_nodes_size >= k) {
+        && self->likelihood_log_nodes_size >= k
+        && self->likelihood_log_recombination_required_size >= k) {
         goto out;
     }
     if (self->likelihood_log_values_size < k) {
@@ -138,6 +141,16 @@ ancestor_matcher_log_ensure_value_buffer(ancestor_matcher_t *self, size_t k)
         }
         self->likelihood_log_nodes = node_tmp;
         self->likelihood_log_nodes_size = k;
+    }
+    if (self->likelihood_log_recombination_required_size < k) {
+        recombination_tmp = realloc(self->likelihood_log_recombination_required,
+            k * sizeof(*self->likelihood_log_recombination_required));
+        if (recombination_tmp == NULL) {
+            ret = TSI_ERR_NO_MEMORY;
+            goto out;
+        }
+        self->likelihood_log_recombination_required = recombination_tmp;
+        self->likelihood_log_recombination_required_size = k;
     }
 out:
     return ret;
@@ -182,6 +195,7 @@ ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
     const int k = self->num_likelihood_nodes;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     const double *restrict L = self->likelihood;
+    const int8_t *restrict R = self->recombination_required;
 
     if (self->likelihood_log_file == NULL) {
         goto out;
@@ -194,6 +208,7 @@ ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
     for (j = 0; j < k; j++) {
         self->likelihood_log_values[j] = L[L_nodes[j]];
         self->likelihood_log_nodes[j] = (int32_t) L_nodes[j];
+        self->likelihood_log_recombination_required[j] = R[L_nodes[j]];
     }
 
     ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_SITE_VALUES);
@@ -219,6 +234,37 @@ ancestor_matcher_log_site_values(ancestor_matcher_t *self, tsk_id_t site)
     }
     ret = ancestor_matcher_log_write(
         self, self->likelihood_log_nodes, (size_t) k * sizeof(*self->likelihood_log_nodes));
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write(self, self->likelihood_log_recombination_required,
+        (size_t) k * sizeof(*self->likelihood_log_recombination_required));
+out:
+    return ret;
+}
+
+static int WARN_UNUSED
+ancestor_matcher_log_selected_node(
+    ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_node)
+{
+    int ret = 0;
+
+    if (self->likelihood_log_file == NULL) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u8(self, TSI_LIKELIHOOD_LOG_REC_SELECTED_NODE);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u64(self, self->likelihood_log_current_path_id);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) site);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) selected_node);
 out:
     return ret;
 }
@@ -343,6 +389,7 @@ ancestor_matcher_set_likelihood_log_file(ancestor_matcher_t *self, const char *p
     self->likelihood_log_current_path_id = 0;
     self->likelihood_log_path_active = false;
     self->likelihood_log_nodes_size = 0;
+    self->likelihood_log_recombination_required_size = 0;
 
     ret = ancestor_matcher_log_write(
         self, TSI_LIKELIHOOD_LOG_HEADER_MAGIC, TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN);
@@ -368,6 +415,7 @@ out:
         self->likelihood_log_current_path_id = 0;
         self->likelihood_log_path_active = false;
         self->likelihood_log_nodes_size = 0;
+        self->likelihood_log_recombination_required_size = 0;
     }
     return ret;
 }
@@ -393,6 +441,8 @@ ancestor_matcher_close_likelihood_log_file(ancestor_matcher_t *self)
     self->likelihood_log_values_size = 0;
     tsi_safe_free(self->likelihood_log_nodes);
     self->likelihood_log_nodes_size = 0;
+    tsi_safe_free(self->likelihood_log_recombination_required);
+    self->likelihood_log_recombination_required_size = 0;
     return ret;
 }
 
@@ -925,7 +975,7 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
     int ret = 0;
     tsk_id_t l;
     edge_t edge;
-    tsk_id_t u, v, max_likelihood_node;
+    tsk_id_t u, v, max_likelihood_node, selected_node;
     tsk_id_t left, right, pos;
     tsk_id_t *restrict parent = self->parent;
     allele_t *restrict allelic_state = self->allelic_state;
@@ -977,13 +1027,18 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
         assert(left < right);
         for (l = TSK_MIN(right, end) - 1; l >= (int) TSK_MAX(left, start); l--) {
             ancestor_matcher_set_allelic_state(self, l, allelic_state);
-            u = self->output.parent[self->output.size];
-            v = u;
+            selected_node = self->output.parent[self->output.size];
+            u = selected_node;
+            v = selected_node;
             while (allelic_state[v] == TSK_NULL) {
                 v = parent[v];
             }
             match[l] = allelic_state[v];
             ancestor_matcher_unset_allelic_state(self, l, allelic_state);
+            ret = ancestor_matcher_log_selected_node(self, l, selected_node);
+            if (ret != 0) {
+                goto out;
+            }
 
             /* Mark the traceback nodes on the tree */
             ancestor_matcher_set_recombination_required(self, l, recombination_required);
@@ -1013,6 +1068,7 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
     self->output.left[self->output.size] = start;
     self->output.size++;
     assert(self->output.right[self->output.size - 1] != start);
+out:
     return ret;
 }
 
@@ -1390,6 +1446,10 @@ ancestor_matcher_get_total_memory(ancestor_matcher_t *self)
     }
     if (self->likelihood_log_nodes != NULL) {
         total += self->likelihood_log_nodes_size * sizeof(*self->likelihood_log_nodes);
+    }
+    if (self->likelihood_log_recombination_required != NULL) {
+        total += self->likelihood_log_recombination_required_size
+            * sizeof(*self->likelihood_log_recombination_required);
     }
 
     return total;

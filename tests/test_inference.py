@@ -4342,9 +4342,11 @@ class TestMismatchAndRecombination:
         assert len(data) > 32
         assert data[:8] == b"TSILHMML"
         version = struct.unpack_from("<I", data, 8)[0]
-        assert version == 2
+        assert version == 3
         offset = 12
         begin_count = 0
+        site_count = 0
+        selected_count = 0
         end_count = 0
         while offset < len(data):
             rec_type = data[offset]
@@ -4353,8 +4355,12 @@ class TestMismatchAndRecombination:
                 begin_count += 1
                 offset += 8 + 4 + 4
             elif rec_type == 2:
+                site_count += 1
                 k = struct.unpack_from("<I", data, offset + 8 + 4)[0]
-                offset += 8 + 4 + 4 + 8 * k + 4 * k
+                offset += 8 + 4 + 4 + 8 * k + 4 * k + k
+            elif rec_type == 4:
+                selected_count += 1
+                offset += 8 + 4 + 4
             elif rec_type == 3:
                 end_count += 1
                 offset += 8 + 4 + 8
@@ -4362,6 +4368,7 @@ class TestMismatchAndRecombination:
                 raise AssertionError(f"Unknown record type {rec_type}")
         assert begin_count > 1
         assert begin_count == end_count
+        assert selected_count == site_count
 
     def test_hmm_likelihood_log_requires_c_engine(self, small_sd_anc_fixture, tmp_path):
         sd, anc = small_sd_anc_fixture

@@ -21,13 +21,14 @@ def load_hmm_log(path):
     path_begin = {}
     path_end = {}
     site_rows = []
+    selected_rows = []
 
     with open(path, "rb") as f:
         magic = f.read(8)
         if magic != b"TSILHMML":
             raise ValueError(f"Bad magic: {magic!r}")
         version = struct.unpack("<I", f.read(4))[0]
-        if version != 2:
+        if version != 3:
             raise ValueError(f"Unsupported version: {version}")
 
         while True:
@@ -44,6 +45,7 @@ def load_hmm_log(path):
                 ancestor_id, site, k = struct.unpack("<QiI", f.read(16))
                 vals = np.frombuffer(f.read(8 * k), dtype="<f8").copy()
                 node_ids = np.frombuffer(f.read(4 * k), dtype="<i4").copy()
+                recombination_required = np.frombuffer(f.read(k), dtype=np.int8).copy()
                 site_rows.append(
                     {
                         "ancestor_id": ancestor_id,
@@ -51,17 +53,37 @@ def load_hmm_log(path):
                         "k": k,
                         "likelihoods": vals,
                         "likelihood_nodes": node_ids,
+                        "recombination_required": recombination_required,
                     }
                 )
 
             elif rec_type == 3:  # PATH_END
                 ancestor_id, status, total_memory = struct.unpack("<QiQ", f.read(20))
                 path_end[ancestor_id] = {"status": status, "total_memory": total_memory}
+            elif rec_type == 4:  # SELECTED_NODE
+                ancestor_id, site, selected_node = struct.unpack("<Qii", f.read(16))
+                selected_rows.append(
+                    {
+                        "ancestor_id": ancestor_id,
+                        "site": site,
+                        "selected_node": selected_node,
+                    }
+                )
 
             else:
                 raise ValueError(f"Unknown record type: {rec_type}")
 
     sites_df = pd.DataFrame(site_rows)
+    if len(selected_rows) > 0:
+        selected_df = pd.DataFrame(selected_rows).drop_duplicates(
+            subset=["ancestor_id", "site"], keep="last"
+        )
+        sites_df = sites_df.merge(selected_df, on=["ancestor_id", "site"], how="left")
+        sites_df["selected_node"] = (
+            sites_df["selected_node"].fillna(-1).astype(np.int32)
+        )
+    else:
+        sites_df["selected_node"] = -1
 
     ancestor_ids = sorted(set(path_begin) | set(path_end))
     paths_df = pd.DataFrame(
@@ -90,16 +112,29 @@ def make_long_df(df, anc_data):
     - k
     - likelihoods
     - likelihood_nodes
+    - recombination_required
+    - selected_node
 
     Output columns:
     - ancestor_id
+    - ancestor_time
     - site
     - k
     - full_likelihood
     - likelihood
     - likelihood_node_id
+    - recombination_required
+    - selected_node
     """
-    required = {"ancestor_id", "site", "k", "likelihoods", "likelihood_nodes"}
+    required = {
+        "ancestor_id",
+        "site",
+        "k",
+        "likelihoods",
+        "likelihood_nodes",
+        "recombination_required",
+        "selected_node",
+    }
     missing = required.difference(df.columns)
     if missing:
         missing_str = ", ".join(sorted(missing))
@@ -116,6 +151,9 @@ def make_long_df(df, anc_data):
 
     likelihoods = df["likelihoods"].to_numpy(dtype=object, copy=False)
     likelihood_nodes = df["likelihood_nodes"].to_numpy(dtype=object, copy=False)
+    recombination_required = df["recombination_required"].to_numpy(
+        dtype=object, copy=False
+    )
 
     # Validate payload lengths once to fail early on malformed rows.
     like_lens = np.fromiter(
@@ -124,10 +162,15 @@ def make_long_df(df, anc_data):
     node_lens = np.fromiter(
         (len(x) for x in likelihood_nodes), dtype=np.int64, count=len(df)
     )
+    recombination_lens = np.fromiter(
+        (len(x) for x in recombination_required), dtype=np.int64, count=len(df)
+    )
     if not np.array_equal(like_lens, k):
         raise ValueError("Lengths in 'likelihoods' do not match column 'k'")
     if not np.array_equal(node_lens, k):
         raise ValueError("Lengths in 'likelihood_nodes' do not match column 'k'")
+    if not np.array_equal(recombination_lens, k):
+        raise ValueError("Lengths in 'recombination_required' do not match column 'k'")
 
     if k.sum() == 0:
         return pd.DataFrame(
@@ -139,6 +182,8 @@ def make_long_df(df, anc_data):
                 "full_likelihood": pd.Series(dtype=np.float64),
                 "likelihood_node_id": pd.Series(dtype=np.int32),
                 "likelihood": pd.Series(dtype=np.int8),
+                "recombination_required": pd.Series(dtype=np.int8),
+                "selected_node": pd.Series(dtype=np.int32),
             }
         )
 
@@ -152,6 +197,10 @@ def make_long_df(df, anc_data):
             "full_likelihood": likelihood_flat,
             "likelihood_node_id": np.concatenate(likelihood_nodes),
             "likelihood": np.equal(likelihood_flat, 1.0).astype(np.int8),
+            "recombination_required": np.concatenate(recombination_required),
+            "selected_node": np.repeat(
+                df["selected_node"].to_numpy(dtype=np.int32, copy=False), k
+            ),
         }
     )
     return long_df
@@ -344,6 +393,8 @@ def summarise_all_likelihoods(df):
         missing_str = ", ".join(sorted(missing))
         raise ValueError(f"DataFrame missing required columns: {missing_str}")
     has_ancestor_time = "ancestor_time" in df.columns
+    has_recombination_required = "recombination_required" in df.columns
+    has_selected_node = "selected_node" in df.columns
 
     columns = [
         "ancestor_id",
@@ -366,6 +417,10 @@ def summarise_all_likelihoods(df):
     ]
     if has_ancestor_time:
         columns = ["ancestor_id", "ancestor_time"] + columns[1:]
+    if has_recombination_required:
+        columns += ["num_recombination_required", "prop_recombination_required"]
+    if has_selected_node:
+        columns += ["num_selected", "prop_selected"]
     if len(df) == 0:
         return pd.DataFrame(columns=columns)
 
@@ -373,6 +428,10 @@ def summarise_all_likelihoods(df):
     work_cols = ["ancestor_id", "site", "likelihood_node_id", "likelihood"]
     if has_ancestor_time:
         work_cols.insert(1, "ancestor_time")
+    if has_recombination_required:
+        work_cols.append("recombination_required")
+    if has_selected_node:
+        work_cols.append("selected_node")
     work = df.loc[:, work_cols]
     work = work.sort_values(
         ["ancestor_id", "likelihood_node_id", "site"], kind="mergesort"
@@ -406,6 +465,25 @@ def summarise_all_likelihoods(df):
     }
     if has_ancestor_time:
         summary_aggs["ancestor_time"] = ("ancestor_time", "first")
+    if has_recombination_required:
+        work["recombination_required"] = (
+            work["recombination_required"].to_numpy(dtype=np.int8, copy=False) != 0
+        ).astype(np.int8)
+        summary_aggs["num_recombination_required"] = (
+            "recombination_required",
+            "sum",
+        )
+        summary_aggs["prop_recombination_required"] = (
+            "recombination_required",
+            "mean",
+        )
+    if has_selected_node:
+        work["is_selected"] = (
+            work["selected_node"].to_numpy(dtype=np.int32, copy=False)
+            == work["likelihood_node_id"].to_numpy(dtype=np.int32, copy=False)
+        ).astype(np.int8)
+        summary_aggs["num_selected"] = ("is_selected", "sum")
+        summary_aggs["prop_selected"] = ("is_selected", "mean")
     out = g2.agg(**summary_aggs).reset_index()
     out["site_span_incl_gaps"] = out["site_end"] - out["site_start"]
 

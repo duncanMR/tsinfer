@@ -249,6 +249,8 @@ typedef struct {
     size_t likelihood_log_values_size;
     int32_t *likelihood_log_nodes;
     size_t likelihood_log_nodes_size;
+    int8_t *likelihood_log_recombination_required;
+    size_t likelihood_log_recombination_required_size;
     struct {
         tsk_id_t *left;
         tsk_id_t *right;

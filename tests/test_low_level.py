@@ -159,7 +159,7 @@ class TestAncestorMatcher:
         assert magic == b"TSILHMML"
         version = struct.unpack_from("<I", data, offset)[0]
         offset += 4
-        assert version == 2
+        assert version == 3
 
         # PATH_BEGIN
         record_type = data[offset]
@@ -176,19 +176,33 @@ class TestAncestorMatcher:
         assert end == 4
 
         num_site_records = 0
-        while data[offset] == 2:
-            num_site_records += 1
-            offset += 1  # record type
-            site_path_id = struct.unpack_from("<Q", data, offset)[0]
-            offset += 8
-            assert site_path_id == path_id
-            offset += 4
-            k = struct.unpack_from("<I", data, offset)[0]
-            offset += 4
-            assert k > 0
-            offset += 8 * k  # likelihood values
-            offset += 4 * k  # likelihood node ids
+        num_selected_records = 0
+        while data[offset] != 3:
+            record_type = data[offset]
+            offset += 1
+            if record_type == 2:
+                num_site_records += 1
+                site_path_id = struct.unpack_from("<Q", data, offset)[0]
+                offset += 8
+                assert site_path_id == path_id
+                offset += 4
+                k = struct.unpack_from("<I", data, offset)[0]
+                offset += 4
+                assert k > 0
+                offset += 8 * k  # likelihood values
+                offset += 4 * k  # likelihood node ids
+                offset += k  # recombination required flags
+            elif record_type == 4:
+                num_selected_records += 1
+                site_path_id = struct.unpack_from("<Q", data, offset)[0]
+                offset += 8
+                assert site_path_id == path_id
+                offset += 4  # site
+                offset += 4  # selected node
+            else:
+                raise AssertionError(f"Unknown record type {record_type}")
         assert num_site_records == 4
+        assert num_selected_records == 4
 
         # PATH_END
         assert data[offset] == 3

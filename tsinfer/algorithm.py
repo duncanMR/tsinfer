@@ -808,7 +808,6 @@ class AncestorMatcher:
             else:
                 p_t = p_recomb
                 recombination_required = True
-            self.traceback[site][u] = recombination_required
             p_e = mu
             if haplotype_state in (tskit.MISSING_DATA, self.allelic_state[v]):
                 p_e = 1 - (num_alleles - 1) * mu
@@ -837,6 +836,7 @@ class AncestorMatcher:
         for u in self.likelihood_nodes:
             x = self.likelihood[u] / max_L
             self.likelihood[u] = max(x, self.likelihood_threshold)
+            self.traceback[site][u] = recombination_required
 
         self.max_likelihood_node[site] = max_L_node
         self.unset_allelic_state(site)
