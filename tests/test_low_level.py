@@ -159,7 +159,7 @@ class TestAncestorMatcher:
         assert magic == b"TSILHMML"
         version = struct.unpack_from("<I", data, offset)[0]
         offset += 4
-        assert version == 3
+        assert version == 4
 
         # PATH_BEGIN
         record_type = data[offset]
@@ -177,6 +177,7 @@ class TestAncestorMatcher:
 
         num_site_records = 0
         num_selected_records = 0
+        selected_mismatch_by_site = {}
         while data[offset] != 3:
             record_type = data[offset]
             offset += 1
@@ -197,12 +198,20 @@ class TestAncestorMatcher:
                 site_path_id = struct.unpack_from("<Q", data, offset)[0]
                 offset += 8
                 assert site_path_id == path_id
-                offset += 4  # site
+                site = struct.unpack_from("<i", data, offset)[0]
+                offset += 4
                 offset += 4  # selected node
+                selected_mismatch = struct.unpack_from("<b", data, offset)[0]
+                offset += 1
+                selected_mismatch_by_site[site] = selected_mismatch
             else:
                 raise AssertionError(f"Unknown record type {record_type}")
         assert num_site_records == 4
         assert num_selected_records == 4
+        expected_selected_mismatch = {
+            site: int(h[site] != match[site]) for site in range(len(match))
+        }
+        assert selected_mismatch_by_site == expected_selected_mismatch
 
         # PATH_END
         assert data[offset] == 3

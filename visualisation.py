@@ -28,7 +28,7 @@ def load_hmm_log(path):
         if magic != b"TSILHMML":
             raise ValueError(f"Bad magic: {magic!r}")
         version = struct.unpack("<I", f.read(4))[0]
-        if version != 3:
+        if version not in (3, 4):
             raise ValueError(f"Unsupported version: {version}")
 
         while True:
@@ -62,11 +62,16 @@ def load_hmm_log(path):
                 path_end[ancestor_id] = {"status": status, "total_memory": total_memory}
             elif rec_type == 4:  # SELECTED_NODE
                 ancestor_id, site, selected_node = struct.unpack("<Qii", f.read(16))
+                if version >= 4:
+                    selected_mismatch = struct.unpack("<b", f.read(1))[0]
+                else:
+                    selected_mismatch = -1
                 selected_rows.append(
                     {
                         "ancestor_id": ancestor_id,
                         "site": site,
                         "selected_node": selected_node,
+                        "selected_mismatch": selected_mismatch,
                     }
                 )
 
@@ -82,8 +87,12 @@ def load_hmm_log(path):
         sites_df["selected_node"] = (
             sites_df["selected_node"].fillna(-1).astype(np.int32)
         )
+        sites_df["selected_mismatch"] = (
+            sites_df["selected_mismatch"].fillna(-1).astype(np.int8)
+        )
     else:
         sites_df["selected_node"] = -1
+        sites_df["selected_mismatch"] = np.int8(-1)
 
     ancestor_ids = sorted(set(path_begin) | set(path_end))
     paths_df = pd.DataFrame(

@@ -29,7 +29,7 @@
 
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
-#define TSI_LIKELIHOOD_LOG_VERSION 3
+#define TSI_LIKELIHOOD_LOG_VERSION 4
 #define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
 #define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
@@ -245,7 +245,8 @@ out:
 
 static int WARN_UNUSED
 ancestor_matcher_log_selected_node(
-    ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_node)
+    ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_node,
+    int8_t selected_mismatch)
 {
     int ret = 0;
 
@@ -265,6 +266,10 @@ ancestor_matcher_log_selected_node(
         goto out;
     }
     ret = ancestor_matcher_log_write_i32(self, (int32_t) selected_node);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u8(self, (uint8_t) selected_mismatch);
 out:
     return ret;
 }
@@ -970,12 +975,13 @@ ancestor_matcher_unset_recombination_required(
 
 static int WARN_UNUSED
 ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end,
-    allele_t *TSK_UNUSED(haplotype), allele_t *match)
+    allele_t *haplotype, allele_t *match)
 {
     int ret = 0;
     tsk_id_t l;
     edge_t edge;
     tsk_id_t u, v, max_likelihood_node, selected_node;
+    int8_t selected_mismatch;
     tsk_id_t left, right, pos;
     tsk_id_t *restrict parent = self->parent;
     allele_t *restrict allelic_state = self->allelic_state;
@@ -1034,8 +1040,13 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
                 v = parent[v];
             }
             match[l] = allelic_state[v];
+            selected_mismatch = 0;
+            if (haplotype[l] != TSK_MISSING_DATA && haplotype[l] != match[l]) {
+                selected_mismatch = 1;
+            }
             ancestor_matcher_unset_allelic_state(self, l, allelic_state);
-            ret = ancestor_matcher_log_selected_node(self, l, selected_node);
+            ret = ancestor_matcher_log_selected_node(
+                self, l, selected_node, selected_mismatch);
             if (ret != 0) {
                 goto out;
             }

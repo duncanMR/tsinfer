@@ -4342,7 +4342,7 @@ class TestMismatchAndRecombination:
         assert len(data) > 32
         assert data[:8] == b"TSILHMML"
         version = struct.unpack_from("<I", data, 8)[0]
-        assert version == 3
+        assert version == 4
         offset = 12
         begin_count = 0
         site_count = 0
@@ -4360,7 +4360,7 @@ class TestMismatchAndRecombination:
                 offset += 8 + 4 + 4 + 8 * k + 4 * k + k
             elif rec_type == 4:
                 selected_count += 1
-                offset += 8 + 4 + 4
+                offset += 8 + 4 + 4 + 1
             elif rec_type == 3:
                 end_count += 1
                 offset += 8 + 4 + 8
