@@ -159,7 +159,7 @@ class TestAncestorMatcher:
         assert magic == b"TSILHMML"
         version = struct.unpack_from("<I", data, offset)[0]
         offset += 4
-        assert version == 4
+        assert version == 6
 
         # PATH_BEGIN
         record_type = data[offset]
@@ -172,12 +172,19 @@ class TestAncestorMatcher:
         offset += 4
         end = struct.unpack_from("<i", data, offset)[0]
         offset += 4
+        child_id = struct.unpack_from("<i", data, offset)[0]
+        offset += 4
+        child_time = struct.unpack_from("<d", data, offset)[0]
+        offset += 8
         assert start == 0
         assert end == 4
+        assert child_id == -1
+        assert np.isnan(child_time)
 
         num_site_records = 0
         num_selected_records = 0
         selected_mismatch_by_site = {}
+        selected_recombination_by_site = {}
         while data[offset] != 3:
             record_type = data[offset]
             offset += 1
@@ -203,7 +210,10 @@ class TestAncestorMatcher:
                 offset += 4  # selected node
                 selected_mismatch = struct.unpack_from("<b", data, offset)[0]
                 offset += 1
+                selected_recombination = struct.unpack_from("<b", data, offset)[0]
+                offset += 1
                 selected_mismatch_by_site[site] = selected_mismatch
+                selected_recombination_by_site[site] = selected_recombination
             else:
                 raise AssertionError(f"Unknown record type {record_type}")
         assert num_site_records == 4
@@ -212,6 +222,7 @@ class TestAncestorMatcher:
             site: int(h[site] != match[site]) for site in range(len(match))
         }
         assert selected_mismatch_by_site == expected_selected_mismatch
+        assert all(r in (0, 1) for r in selected_recombination_by_site.values())
 
         # PATH_END
         assert data[offset] == 3

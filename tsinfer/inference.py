@@ -1145,6 +1145,7 @@ class SampleBatchWorkDescriptor:
     precision: int
     engine: str
     extended_checks: bool
+    hmm_likelihood_log: str
     post_process: bool
     force_sample_times: bool
     overlay_non_inference_sites: bool
@@ -1165,6 +1166,7 @@ class SampleBatchWorkDescriptor:
             "precision": self.precision,
             "engine": self.engine,
             "extended_checks": self.extended_checks,
+            "hmm_likelihood_log": self.hmm_likelihood_log,
         }
 
     def save(self, path):
@@ -1189,6 +1191,7 @@ class SampleBatchWorkDescriptor:
 
         with open(path) as f:
             wd_dict = json.load(f, object_hook=numpy_decoder)
+        wd_dict.setdefault("hmm_likelihood_log", None)
         return cls(**wd_dict)
 
 
@@ -1210,6 +1213,7 @@ def load_variant_data_and_ancestors_ts(wd: SampleBatchWorkDescriptor):
     matcher = SampleMatcher(
         variant_data,
         ancestor_ts,
+        num_threads=0,
         **wd.common_params(),
     )
     return variant_data, ancestor_ts, matcher
@@ -1242,6 +1246,7 @@ def match_samples_batch_init(
     mismatch=None,  # See :class:`Matcher`
     precision=None,
     extended_checks=False,
+    hmm_likelihood_log=None,
     engine=constants.C_ENGINE,
     record_provenance=True,
 ):
@@ -1383,6 +1388,7 @@ def match_samples_batch_init(
         precision=precision,
         engine=engine,
         extended_checks=extended_checks,
+        hmm_likelihood_log=hmm_likelihood_log,
         post_process=post_process,
         force_sample_times=force_sample_times,
         overlay_non_inference_sites=overlay_non_inference_sites,
@@ -1529,6 +1535,7 @@ def match_samples(
     precision=None,
     likelihood_threshold=None,
     extended_checks=False,
+    hmm_likelihood_log=None,
     engine=constants.C_ENGINE,
     progress_monitor=None,
     simplify=None,  # deprecated
@@ -1583,6 +1590,9 @@ def match_samples(
         the selected sites, but were not used for inference, will be added to the
         tree sequence by mapping their mutations over the inferred topology.
         Defaults to True.
+    :param str hmm_likelihood_log: Optional path to write binary HMM likelihood
+        diagnostics for each matched path. Only supported with the C engine and
+        ``num_threads <= 0``.
     :return: The tree sequence representing the inferred history
         of the sample.
     :rtype: tskit.TreeSequence
@@ -1623,6 +1633,7 @@ def match_samples(
             precision=precision,
             likelihood_threshold=likelihood_threshold,
             extended_checks=extended_checks,
+            hmm_likelihood_log=hmm_likelihood_log,
             engine=engine,
             progress_monitor=progress_monitor,
         )
@@ -2266,7 +2277,9 @@ class Matcher:
         """
         missing = haplotype == tskit.MISSING_DATA
         match = np.full(len(haplotype), tskit.MISSING_DATA, dtype=np.int8)
-        left, right, parent = matcher.find_path(haplotype, start, end, match)
+        left, right, parent = matcher.find_path(
+            haplotype, start, end, match, child_id=child_id
+        )
         match[missing] = tskit.MISSING_DATA
         diffs = start + np.where(haplotype[start:end] != match[start:end])[0]
         derived_state = haplotype[diffs]

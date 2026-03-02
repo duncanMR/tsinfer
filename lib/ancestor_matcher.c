@@ -29,7 +29,7 @@
 
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
-#define TSI_LIKELIHOOD_LOG_VERSION 4
+#define TSI_LIKELIHOOD_LOG_VERSION 6
 #define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
 #define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
@@ -157,12 +157,18 @@ out:
 }
 
 static int WARN_UNUSED
-ancestor_matcher_log_path_begin(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end)
+ancestor_matcher_log_path_begin(
+    ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end, tsk_id_t child_id)
 {
     int ret = 0;
+    double child_time = NAN;
 
     if (self->likelihood_log_file == NULL) {
         goto out;
+    }
+    if (child_id != NULL_NODE && child_id >= 0
+        && child_id < (tsk_id_t) self->tree_sequence_builder->num_nodes) {
+        child_time = self->tree_sequence_builder->time[child_id];
     }
     self->likelihood_log_path_id++;
     self->likelihood_log_current_path_id = self->likelihood_log_path_id;
@@ -180,6 +186,14 @@ ancestor_matcher_log_path_begin(ancestor_matcher_t *self, tsk_id_t start, tsk_id
         goto out;
     }
     ret = ancestor_matcher_log_write_i32(self, (int32_t) end);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) child_id);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write(self, &child_time, sizeof(child_time));
     if (ret != 0) {
         goto out;
     }
@@ -246,7 +260,7 @@ out:
 static int WARN_UNUSED
 ancestor_matcher_log_selected_node(
     ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_node,
-    int8_t selected_mismatch)
+    int8_t selected_mismatch, int8_t selected_recombination)
 {
     int ret = 0;
 
@@ -270,6 +284,10 @@ ancestor_matcher_log_selected_node(
         goto out;
     }
     ret = ancestor_matcher_log_write_u8(self, (uint8_t) selected_mismatch);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_u8(self, (uint8_t) selected_recombination);
 out:
     return ret;
 }
@@ -981,7 +999,7 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
     tsk_id_t l;
     edge_t edge;
     tsk_id_t u, v, max_likelihood_node, selected_node;
-    int8_t selected_mismatch;
+    int8_t selected_mismatch, selected_recombination;
     tsk_id_t left, right, pos;
     tsk_id_t *restrict parent = self->parent;
     allele_t *restrict allelic_state = self->allelic_state;
@@ -1045,12 +1063,6 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
                 selected_mismatch = 1;
             }
             ancestor_matcher_unset_allelic_state(self, l, allelic_state);
-            ret = ancestor_matcher_log_selected_node(
-                self, l, selected_node, selected_mismatch);
-            if (ret != 0) {
-                goto out;
-            }
-
             /* Mark the traceback nodes on the tree */
             ancestor_matcher_set_recombination_required(self, l, recombination_required);
 
@@ -1060,7 +1072,13 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
                 u = parent[u];
                 assert(u != NULL_NODE);
             }
-            if (recombination_required[u] && l > start) {
+            selected_recombination = recombination_required[u];
+            ret = ancestor_matcher_log_selected_node(
+                self, l, selected_node, selected_mismatch, selected_recombination);
+            if (ret != 0) {
+                goto out;
+            }
+            if (selected_recombination && l > start) {
                 max_likelihood_node = self->max_likelihood_node[l - 1];
                 assert(max_likelihood_node != NULL_NODE);
                 self->output.left[self->output.size] = l;
@@ -1339,8 +1357,9 @@ out:
 
 int
 ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end,
-    allele_t *haplotype, allele_t *matched_haplotype, size_t *num_output_edges,
-    tsk_id_t **left_output, tsk_id_t **right_output, tsk_id_t **parent_output)
+    allele_t *haplotype, allele_t *matched_haplotype, tsk_id_t child_id,
+    size_t *num_output_edges, tsk_id_t **left_output, tsk_id_t **right_output,
+    tsk_id_t **parent_output)
 {
     int ret = 0;
     int tmp_ret;
@@ -1349,7 +1368,7 @@ ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t en
     if (ret != 0) {
         goto out;
     }
-    ret = ancestor_matcher_log_path_begin(self, start, end);
+    ret = ancestor_matcher_log_path_begin(self, start, end, child_id);
     if (ret != 0) {
         goto out;
     }

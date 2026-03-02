@@ -4342,7 +4342,7 @@ class TestMismatchAndRecombination:
         assert len(data) > 32
         assert data[:8] == b"TSILHMML"
         version = struct.unpack_from("<I", data, 8)[0]
-        assert version == 4
+        assert version == 6
         offset = 12
         begin_count = 0
         site_count = 0
@@ -4353,14 +4353,14 @@ class TestMismatchAndRecombination:
             offset += 1
             if rec_type == 1:
                 begin_count += 1
-                offset += 8 + 4 + 4
+                offset += 8 + 4 + 4 + 4 + 8
             elif rec_type == 2:
                 site_count += 1
                 k = struct.unpack_from("<I", data, offset + 8 + 4)[0]
                 offset += 8 + 4 + 4 + 8 * k + 4 * k + k
             elif rec_type == 4:
                 selected_count += 1
-                offset += 8 + 4 + 4 + 1
+                offset += 8 + 4 + 4 + 1 + 1
             elif rec_type == 3:
                 end_count += 1
                 offset += 8 + 4 + 8
@@ -4370,12 +4370,73 @@ class TestMismatchAndRecombination:
         assert begin_count == end_count
         assert selected_count == site_count
 
+    def test_hmm_likelihood_log_match_samples(self, small_sd_anc_fixture, tmp_path):
+        sd, anc = small_sd_anc_fixture
+        anc_ts = tsinfer.match_ancestors(sd, anc)
+        log_path = tmp_path / "match_samples_hmm.bin"
+        ts = tsinfer.match_samples(sd, anc_ts, hmm_likelihood_log=log_path)
+        assert ts.num_nodes > 0
+        assert log_path.is_file()
+        data = log_path.read_bytes()
+        assert len(data) > 32
+        assert data[:8] == b"TSILHMML"
+        version = struct.unpack_from("<I", data, 8)[0]
+        assert version == 6
+        offset = 12
+        begin_count = 0
+        site_count = 0
+        selected_count = 0
+        end_count = 0
+        child_ids = set()
+        while offset < len(data):
+            rec_type = data[offset]
+            offset += 1
+            if rec_type == 1:
+                begin_count += 1
+                offset += 8  # path_id
+                offset += 4  # start
+                offset += 4  # end
+                child_id = struct.unpack_from("<i", data, offset)[0]
+                offset += 4
+                child_time = struct.unpack_from("<d", data, offset)[0]
+                offset += 8
+                assert child_id >= 0
+                assert np.isfinite(child_time)
+                child_ids.add(child_id)
+            elif rec_type == 2:
+                site_count += 1
+                k = struct.unpack_from("<I", data, offset + 8 + 4)[0]
+                offset += 8 + 4 + 4 + 8 * k + 4 * k + k
+            elif rec_type == 4:
+                selected_count += 1
+                offset += 8 + 4 + 4 + 1 + 1
+            elif rec_type == 3:
+                end_count += 1
+                offset += 8 + 4 + 8
+            else:
+                raise AssertionError(f"Unknown record type {rec_type}")
+        assert begin_count == end_count
+        assert selected_count == site_count
+        assert begin_count == sd.num_samples
+        assert len(child_ids) == begin_count
+
     def test_hmm_likelihood_log_requires_c_engine(self, small_sd_anc_fixture, tmp_path):
         sd, anc = small_sd_anc_fixture
         log_path = tmp_path / "match_ancestors_hmm.bin"
         with pytest.raises(ValueError, match="only supported with the C engine"):
             tsinfer.match_ancestors(
                 sd, anc, engine=tsinfer.PY_ENGINE, hmm_likelihood_log=log_path
+            )
+
+    def test_hmm_likelihood_log_match_samples_requires_c_engine(
+        self, small_sd_anc_fixture, tmp_path
+    ):
+        sd, anc = small_sd_anc_fixture
+        anc_ts = tsinfer.match_ancestors(sd, anc)
+        log_path = tmp_path / "match_samples_hmm.bin"
+        with pytest.raises(ValueError, match="only supported with the C engine"):
+            tsinfer.match_samples(
+                sd, anc_ts, engine=tsinfer.PY_ENGINE, hmm_likelihood_log=log_path
             )
 
     def test_hmm_likelihood_log_requires_single_thread(
@@ -4387,6 +4448,21 @@ class TestMismatchAndRecombination:
             tsinfer.match_ancestors(
                 sd,
                 anc,
+                engine=tsinfer.C_ENGINE,
+                num_threads=1,
+                hmm_likelihood_log=log_path,
+            )
+
+    def test_hmm_likelihood_log_match_samples_requires_single_thread(
+        self, small_sd_anc_fixture, tmp_path
+    ):
+        sd, anc = small_sd_anc_fixture
+        anc_ts = tsinfer.match_ancestors(sd, anc)
+        log_path = tmp_path / "match_samples_hmm.bin"
+        with pytest.raises(ValueError, match="num_threads <= 0"):
+            tsinfer.match_samples(
+                sd,
+                anc_ts,
                 engine=tsinfer.C_ENGINE,
                 num_threads=1,
                 hmm_likelihood_log=log_path,

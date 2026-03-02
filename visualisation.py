@@ -28,105 +28,155 @@ def load_hmm_log(path):
         if magic != b"TSILHMML":
             raise ValueError(f"Bad magic: {magic!r}")
         version = struct.unpack("<I", f.read(4))[0]
-        if version not in (3, 4):
-            raise ValueError(f"Unsupported version: {version}")
+        if version != 6:
+            raise ValueError(f"Unsupported version: {version}. Expected version 6.")
 
         while True:
-            t = f.read(1)
-            if not t:
+            tag = f.read(1)
+            if not tag:
                 break
-            rec_type = t[0]
-
+            rec_type = tag[0]
             if rec_type == 1:  # PATH_BEGIN
-                ancestor_id, start, end = struct.unpack("<Qii", f.read(16))
-                path_begin[ancestor_id] = {"start": start, "end": end}
-
+                path_id, start, end = struct.unpack("<Qii", f.read(16))
+                child_id = struct.unpack("<i", f.read(4))[0]
+                child_time = struct.unpack("<d", f.read(8))[0]
+                path_begin[path_id] = {
+                    "start": start,
+                    "end": end,
+                    "child_id": child_id,
+                    "child_time": child_time,
+                }
             elif rec_type == 2:  # SITE_VALUES
-                ancestor_id, site, k = struct.unpack("<QiI", f.read(16))
-                vals = np.frombuffer(f.read(8 * k), dtype="<f8").copy()
-                node_ids = np.frombuffer(f.read(4 * k), dtype="<i4").copy()
-                recombination_required = np.frombuffer(f.read(k), dtype=np.int8).copy()
+                path_id, site, k = struct.unpack("<QiI", f.read(16))
                 site_rows.append(
                     {
-                        "ancestor_id": ancestor_id,
+                        "path_id": path_id,
                         "site": site,
                         "k": k,
-                        "likelihoods": vals,
-                        "likelihood_nodes": node_ids,
-                        "recombination_required": recombination_required,
+                        "likelihoods": np.frombuffer(f.read(8 * k), dtype="<f8").copy(),
+                        "likelihood_nodes": np.frombuffer(
+                            f.read(4 * k), dtype="<i4"
+                        ).copy(),
+                        "recombination_required": np.frombuffer(
+                            f.read(k), dtype=np.int8
+                        ).copy(),
                     }
                 )
-
             elif rec_type == 3:  # PATH_END
-                ancestor_id, status, total_memory = struct.unpack("<QiQ", f.read(20))
-                path_end[ancestor_id] = {"status": status, "total_memory": total_memory}
+                path_id, status, total_memory = struct.unpack("<QiQ", f.read(20))
+                path_end[path_id] = {"status": status, "total_memory": total_memory}
             elif rec_type == 4:  # SELECTED_NODE
-                ancestor_id, site, selected_node = struct.unpack("<Qii", f.read(16))
-                if version >= 4:
-                    selected_mismatch = struct.unpack("<b", f.read(1))[0]
-                else:
-                    selected_mismatch = -1
+                path_id, site, selected_node = struct.unpack("<Qii", f.read(16))
+                selected_mismatch = struct.unpack("<b", f.read(1))[0]
+                selected_recombination = struct.unpack("<b", f.read(1))[0]
                 selected_rows.append(
                     {
-                        "ancestor_id": ancestor_id,
+                        "path_id": path_id,
                         "site": site,
                         "selected_node": selected_node,
                         "selected_mismatch": selected_mismatch,
+                        "selected_recombination": selected_recombination,
                     }
                 )
-
             else:
                 raise ValueError(f"Unknown record type: {rec_type}")
 
-    sites_df = pd.DataFrame(site_rows)
-    if len(selected_rows) > 0:
-        selected_df = pd.DataFrame(selected_rows).drop_duplicates(
-            subset=["ancestor_id", "site"], keep="last"
+    sites_df = pd.DataFrame(
+        site_rows,
+        columns=[
+            "path_id",
+            "site",
+            "k",
+            "likelihoods",
+            "likelihood_nodes",
+            "recombination_required",
+        ],
+    )
+    selected_df = pd.DataFrame(
+        selected_rows,
+        columns=[
+            "path_id",
+            "site",
+            "selected_node",
+            "selected_mismatch",
+            "selected_recombination",
+        ],
+    )
+    if len(selected_df) > 0:
+        selected_df = selected_df.drop_duplicates(
+            subset=["path_id", "site"], keep="last"
         )
-        sites_df = sites_df.merge(selected_df, on=["ancestor_id", "site"], how="left")
-        sites_df["selected_node"] = (
-            sites_df["selected_node"].fillna(-1).astype(np.int32)
-        )
-        sites_df["selected_mismatch"] = (
-            sites_df["selected_mismatch"].fillna(-1).astype(np.int8)
-        )
+        sites_df = sites_df.merge(selected_df, on=["path_id", "site"], how="left")
     else:
         sites_df["selected_node"] = -1
-        sites_df["selected_mismatch"] = np.int8(-1)
+        sites_df["selected_mismatch"] = -1
+        sites_df["selected_recombination"] = -1
+    sites_df["selected_node"] = sites_df["selected_node"].fillna(-1).astype(np.int32)
+    sites_df["selected_mismatch"] = (
+        sites_df["selected_mismatch"].fillna(-1).astype(np.int8)
+    )
+    sites_df["selected_recombination"] = (
+        sites_df["selected_recombination"].fillna(-1).astype(np.int8)
+    )
 
-    ancestor_ids = sorted(set(path_begin) | set(path_end))
+    path_ids = sorted(set(path_begin) | set(path_end))
     paths_df = pd.DataFrame(
         [
             {
-                "ancestor_id": pid,
-                "start": path_begin.get(pid, {}).get("start"),
-                "end": path_begin.get(pid, {}).get("end"),
-                "status": path_end.get(pid, {}).get("status"),
-                "total_memory": path_end.get(pid, {}).get("total_memory"),
+                "path_id": path_id,
+                "child_id": path_begin.get(path_id, {}).get("child_id"),
+                "child_time": path_begin.get(path_id, {}).get("child_time"),
+                "start": path_begin.get(path_id, {}).get("start"),
+                "end": path_begin.get(path_id, {}).get("end"),
+                "status": path_end.get(path_id, {}).get("status"),
+                "total_memory": path_end.get(path_id, {}).get("total_memory"),
             }
-            for pid in ancestor_ids
-        ]
+            for path_id in path_ids
+        ],
+        columns=[
+            "path_id",
+            "child_id",
+            "child_time",
+            "start",
+            "end",
+            "status",
+            "total_memory",
+        ],
     )
+    paths_df["child_id"] = paths_df["child_id"].fillna(-1).astype(np.int32)
+    paths_df["child_time"] = paths_df["child_time"].astype(np.float64, copy=False)
 
+    if len(sites_df) > 0:
+        sites_df = sites_df.merge(
+            paths_df[["path_id", "child_id", "child_time"]], on="path_id", how="left"
+        )
+    else:
+        sites_df["child_id"] = pd.Series(dtype=np.int32)
+        sites_df["child_time"] = pd.Series(dtype=np.float64)
+    sites_df["child_id"] = sites_df["child_id"].fillna(-1).astype(np.int32)
+    sites_df["child_time"] = sites_df["child_time"].astype(np.float64, copy=False)
     return sites_df, paths_df
 
 
-def make_long_df(df, anc_data):
+def make_long_df(df):
     """
     Flatten per-site likelihood arrays into one row per likelihood value.
 
     Input columns:
-    - ancestor_id
+    - child_id
+    - child_time
     - site
     - k
     - likelihoods
     - likelihood_nodes
     - recombination_required
     - selected_node
+    - selected_mismatch
+    - selected_recombination
 
     Output columns:
-    - ancestor_id
-    - ancestor_time
+    - child_id
+    - child_time
     - site
     - k
     - full_likelihood
@@ -134,15 +184,21 @@ def make_long_df(df, anc_data):
     - likelihood_node_id
     - recombination_required
     - selected_node
+    - selected_mismatch
+    - selected_recombination
     """
+    df = pd.DataFrame(df, copy=False)
     required = {
-        "ancestor_id",
+        "child_id",
+        "child_time",
         "site",
         "k",
         "likelihoods",
         "likelihood_nodes",
         "recombination_required",
         "selected_node",
+        "selected_mismatch",
+        "selected_recombination",
     }
     missing = required.difference(df.columns)
     if missing:
@@ -151,8 +207,6 @@ def make_long_df(df, anc_data):
 
     if len(df) == 0:
         raise ValueError("Input DataFrame is empty")
-
-    df["ancestor_time"] = anc_data.ancestors_time[df["ancestor_id"]]
 
     k = df["k"].to_numpy(dtype=np.int64, copy=False)
     if np.any(k < 0):
@@ -184,8 +238,8 @@ def make_long_df(df, anc_data):
     if k.sum() == 0:
         return pd.DataFrame(
             {
-                "ancestor_id": pd.Series(dtype=df["ancestor_id"].dtype),
-                "ancestor_time": pd.Series(dtype=df["ancestor_time"].dtype),
+                "child_id": pd.Series(dtype=np.int32),
+                "child_time": pd.Series(dtype=np.float64),
                 "site": pd.Series(dtype=df["site"].dtype),
                 "k": pd.Series(dtype=np.int64),
                 "full_likelihood": pd.Series(dtype=np.float64),
@@ -193,14 +247,20 @@ def make_long_df(df, anc_data):
                 "likelihood": pd.Series(dtype=np.int8),
                 "recombination_required": pd.Series(dtype=np.int8),
                 "selected_node": pd.Series(dtype=np.int32),
+                "selected_mismatch": pd.Series(dtype=np.int8),
+                "selected_recombination": pd.Series(dtype=np.int8),
             }
         )
 
     likelihood_flat = np.concatenate(likelihoods)
-    long_df = pd.DataFrame(
+    return pd.DataFrame(
         {
-            "ancestor_id": np.repeat(df["ancestor_id"].to_numpy(copy=False), k),
-            "ancestor_time": np.repeat(df["ancestor_time"].to_numpy(copy=False), k),
+            "child_id": np.repeat(
+                df["child_id"].to_numpy(dtype=np.int32, copy=False), k
+            ),
+            "child_time": np.repeat(
+                df["child_time"].to_numpy(dtype=np.float64, copy=False), k
+            ),
             "site": np.repeat(df["site"].to_numpy(copy=False), k),
             "k": np.repeat(k, k),
             "full_likelihood": likelihood_flat,
@@ -210,9 +270,14 @@ def make_long_df(df, anc_data):
             "selected_node": np.repeat(
                 df["selected_node"].to_numpy(dtype=np.int32, copy=False), k
             ),
+            "selected_mismatch": np.repeat(
+                df["selected_mismatch"].to_numpy(dtype=np.int8, copy=False), k
+            ),
+            "selected_recombination": np.repeat(
+                df["selected_recombination"].to_numpy(dtype=np.int8, copy=False), k
+            ),
         }
     )
-    return long_df
 
 
 def summarise_likelihoods(df, ancestor_id, likelihood_node_id, genome_length):

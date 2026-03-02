@@ -245,7 +245,7 @@ add_haplotype(tree_sequence_builder_t *tsb, ancestor_matcher_t *ancestor_matcher
     /* ancestor_matcher_print_state(ancestor_matcher, stdout); */
 
     ret = ancestor_matcher_find_path(ancestor_matcher, start, end, haplotype, match,
-        &num_edges, &left, &right, &parent);
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     /* Add the edges for this match */
     ret = tree_sequence_builder_add_path(tsb, child, num_edges, left, right, parent,
@@ -557,8 +557,8 @@ test_matching_one_site(void)
         &ancestor_matcher, &tsb, &recombination_rate, &mismatch_rate, 1e-12, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 1, haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 1, haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     CU_ASSERT_EQUAL(num_edges, 1);
     CU_ASSERT_EQUAL(left[0], 0);
@@ -576,8 +576,8 @@ test_matching_one_site(void)
     /* Make sure we hit the realloc behaviour on the ancestor matcher */
     ancestor_matcher.traceback_realloc_size = 10;
 
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 1, haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 1, haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     CU_ASSERT_EQUAL(num_edges, 1);
     CU_ASSERT_EQUAL(left[0], 0);
@@ -648,20 +648,20 @@ test_matching_one_site_many_alleles(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     haplotype = 0;
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 1, &haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 1, &haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     CU_ASSERT_EQUAL(parent[0], 1);
 
     haplotype = num_alleles;
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 1, &haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 1, &haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, TSI_ERR_BAD_HAPLOTYPE_ALLELE);
 
     for (j = 1; j < num_nodes - 1; j++) {
         haplotype = j;
         ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 1, &haplotype, match,
-            &num_edges, &left, &right, &parent);
+            NULL_NODE, &num_edges, &left, &right, &parent);
         CU_ASSERT_EQUAL_FATAL(ret, 0);
         CU_ASSERT_EQUAL(num_edges, 1);
         CU_ASSERT_EQUAL(left[0], 0);
@@ -705,8 +705,8 @@ test_matching_errors(void)
     ret = ancestor_matcher_alloc(
         &ancestor_matcher, &tsb, recombination_rate, mismatch_rate, 1e-12, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 2, haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 2, haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, TSI_ERR_MATCH_IMPOSSIBLE_EXTREME_MUTATION_PROBA);
     ancestor_matcher_free(&ancestor_matcher);
 
@@ -715,8 +715,8 @@ test_matching_errors(void)
     ret = ancestor_matcher_alloc(
         &ancestor_matcher, &tsb, recombination_rate, mismatch_rate, 1e-12, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = ancestor_matcher_find_path(
-        &ancestor_matcher, 0, 2, haplotype, match, &num_edges, &left, &right, &parent);
+    ret = ancestor_matcher_find_path(&ancestor_matcher, 0, 2, haplotype, match,
+        NULL_NODE, &num_edges, &left, &right, &parent);
     CU_ASSERT_EQUAL_FATAL(ret, TSI_ERR_MATCH_IMPOSSIBLE_EXTREME_MUTATION_PROBA);
     ancestor_matcher_free(&ancestor_matcher);
 

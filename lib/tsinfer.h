@@ -277,8 +277,9 @@ int ancestor_matcher_alloc(ancestor_matcher_t *self,
     double *mismatch_rate, double likelihood_threshold, int flags);
 int ancestor_matcher_free(ancestor_matcher_t *self);
 int ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end,
-    allele_t *haplotype, allele_t *matched_haplotype, size_t *num_output_edges,
-    tsk_id_t **left_output, tsk_id_t **right_output, tsk_id_t **parent_output);
+    allele_t *haplotype, allele_t *matched_haplotype, tsk_id_t child_id,
+    size_t *num_output_edges, tsk_id_t **left_output, tsk_id_t **right_output,
+    tsk_id_t **parent_output);
 int ancestor_matcher_print_state(ancestor_matcher_t *self, FILE *out);
 int ancestor_matcher_set_likelihood_log_file(ancestor_matcher_t *self, const char *path);
 int ancestor_matcher_close_likelihood_log_file(ancestor_matcher_t *self);

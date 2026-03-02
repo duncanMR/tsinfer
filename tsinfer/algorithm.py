@@ -913,7 +913,7 @@ class AncestorMatcher:
     def is_nonzero_root(self, u):
         return u != 0 and self.is_root(u) and self.left_child[u] == -1
 
-    def find_path(self, h, start, end, match):
+    def find_path(self, h, start, end, match, child_id=None):  # noqa ARG002
         Il = self.tree_sequence_builder.left_index
         Ir = self.tree_sequence_builder.right_index
         M = len(Il)
