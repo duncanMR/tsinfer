@@ -1145,6 +1145,7 @@ class SampleBatchWorkDescriptor:
     precision: int
     engine: str
     extended_checks: bool
+    weight_by_n: bool
     hmm_likelihood_log: str
     post_process: bool
     force_sample_times: bool
@@ -1166,6 +1167,7 @@ class SampleBatchWorkDescriptor:
             "precision": self.precision,
             "engine": self.engine,
             "extended_checks": self.extended_checks,
+            "weight_by_n": self.weight_by_n,
             "hmm_likelihood_log": self.hmm_likelihood_log,
         }
 
@@ -1191,6 +1193,7 @@ class SampleBatchWorkDescriptor:
 
         with open(path) as f:
             wd_dict = json.load(f, object_hook=numpy_decoder)
+        wd_dict.setdefault("weight_by_n", True)
         wd_dict.setdefault("hmm_likelihood_log", None)
         return cls(**wd_dict)
 
@@ -1246,6 +1249,7 @@ def match_samples_batch_init(
     mismatch=None,  # See :class:`Matcher`
     precision=None,
     extended_checks=False,
+    weight_by_n=True,
     hmm_likelihood_log=None,
     engine=constants.C_ENGINE,
     record_provenance=True,
@@ -1388,6 +1392,7 @@ def match_samples_batch_init(
         precision=precision,
         engine=engine,
         extended_checks=extended_checks,
+        weight_by_n=weight_by_n,
         hmm_likelihood_log=hmm_likelihood_log,
         post_process=post_process,
         force_sample_times=force_sample_times,
@@ -1535,6 +1540,7 @@ def match_samples(
     precision=None,
     likelihood_threshold=None,
     extended_checks=False,
+    weight_by_n=True,
     hmm_likelihood_log=None,
     engine=constants.C_ENGINE,
     progress_monitor=None,
@@ -1633,6 +1639,7 @@ def match_samples(
             precision=precision,
             likelihood_threshold=likelihood_threshold,
             extended_checks=extended_checks,
+            weight_by_n=weight_by_n,
             hmm_likelihood_log=hmm_likelihood_log,
             engine=engine,
             progress_monitor=progress_monitor,
@@ -1668,6 +1675,7 @@ def match_samples(
             mismatch_ratio=mismatch_ratio,
             path_compression=path_compression,
             precision=precision,
+            weight_by_n=weight_by_n,
             simplify=simplify,
             post_process=post_process,
             # TODO: maybe record recombination rate (which could be a RateMap)
