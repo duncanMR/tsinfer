@@ -29,7 +29,7 @@
 
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC "TSILHMML"
 #define TSI_LIKELIHOOD_LOG_HEADER_MAGIC_LEN 8
-#define TSI_LIKELIHOOD_LOG_VERSION 6
+#define TSI_LIKELIHOOD_LOG_VERSION 7
 #define TSI_LIKELIHOOD_LOG_REC_PATH_BEGIN 1
 #define TSI_LIKELIHOOD_LOG_REC_SITE_VALUES 2
 #define TSI_LIKELIHOOD_LOG_REC_PATH_END 3
@@ -259,8 +259,9 @@ out:
 
 static int WARN_UNUSED
 ancestor_matcher_log_selected_node(
-    ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_node,
-    int8_t selected_mismatch, int8_t selected_recombination)
+    ancestor_matcher_t *self, tsk_id_t site, tsk_id_t selected_tree_node,
+    tsk_id_t selected_likelihood_node, int8_t selected_mismatch,
+    int8_t selected_recombination)
 {
     int ret = 0;
 
@@ -279,7 +280,11 @@ ancestor_matcher_log_selected_node(
     if (ret != 0) {
         goto out;
     }
-    ret = ancestor_matcher_log_write_i32(self, (int32_t) selected_node);
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) selected_tree_node);
+    if (ret != 0) {
+        goto out;
+    }
+    ret = ancestor_matcher_log_write_i32(self, (int32_t) selected_likelihood_node);
     if (ret != 0) {
         goto out;
     }
@@ -1073,8 +1078,8 @@ ancestor_matcher_run_traceback(ancestor_matcher_t *self, tsk_id_t start, tsk_id_
                 assert(u != NULL_NODE);
             }
             selected_recombination = recombination_required[u];
-            ret = ancestor_matcher_log_selected_node(
-                self, l, selected_node, selected_mismatch, selected_recombination);
+            ret = ancestor_matcher_log_selected_node(self, l, selected_node, u,
+                selected_mismatch, selected_recombination);
             if (ret != 0) {
                 goto out;
             }

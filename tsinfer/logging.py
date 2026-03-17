@@ -13,8 +13,8 @@ def load_hmm_log(path, likelihood_threshold=1e-13):
     if data[:8] != b"TSILHMML":
         raise ValueError(f"Bad magic: {data[:8]!r}")
     version = struct.unpack_from("<I", data, 8)[0]
-    if version != 6:
-        raise ValueError(f"Unsupported version: {version}. Expected version 6.")
+    if version != 7:
+        raise ValueError(f"Unsupported version: {version}. Expected version 7.")
 
     view = memoryview(data)
     path_begin_child_id = {}
@@ -77,13 +77,15 @@ def load_hmm_log(path, likelihood_threshold=1e-13):
                 (
                     path_id,
                     site,
-                    selected_node,
+                    selected_tree_node,
+                    selected_likelihood_node,
                     selected_mismatch,
                     selected_recombination,
-                ) = struct.unpack_from("<Qiibb", data, pos)
-                pos += 18
+                ) = struct.unpack_from("<Qiiibb", data, pos)
+                pos += 22
                 selected_map[(path_id, site)] = (
-                    selected_node,
+                    selected_tree_node,
+                    selected_likelihood_node,
                     selected_mismatch,
                     selected_recombination,
                 )
@@ -105,7 +107,8 @@ def load_hmm_log(path, likelihood_threshold=1e-13):
                 "likelihoods": pd.Series(dtype=object),
                 "likelihood_nodes": pd.Series(dtype=object),
                 "recombination_required": pd.Series(dtype=object),
-                "selected_node": pd.Series(dtype=np.int32),
+                "selected_tree_node": pd.Series(dtype=np.int32),
+                "selected_likelihood_node": pd.Series(dtype=np.int32),
                 "selected_mismatch": pd.Series(dtype=np.int8),
                 "selected_recombination": pd.Series(dtype=np.int8),
                 "child_id": pd.Series(dtype=np.int32),
@@ -115,15 +118,17 @@ def load_hmm_log(path, likelihood_threshold=1e-13):
             }
         )
     else:
-        selected_node = np.full(n_sites, -1, dtype=np.int32)
+        selected_tree_node = np.full(n_sites, -1, dtype=np.int32)
+        selected_likelihood_node = np.full(n_sites, -1, dtype=np.int32)
         selected_mismatch = np.full(n_sites, -1, dtype=np.int8)
         selected_recombination = np.full(n_sites, -1, dtype=np.int8)
         for index, (path_id, site) in enumerate(zip(site_path_ids, site_sites)):
             values = selected_map.get((path_id, site))
             if values is not None:
-                selected_node[index] = values[0]
-                selected_mismatch[index] = values[1]
-                selected_recombination[index] = values[2]
+                selected_tree_node[index] = values[0]
+                selected_likelihood_node[index] = values[1]
+                selected_mismatch[index] = values[2]
+                selected_recombination[index] = values[3]
 
         child_id = np.fromiter(
             (path_begin_child_id.get(path_id, -1) for path_id in site_path_ids),
@@ -144,7 +149,8 @@ def load_hmm_log(path, likelihood_threshold=1e-13):
                 "likelihoods": site_likelihoods,
                 "likelihood_nodes": site_likelihood_nodes,
                 "recombination_required": site_recombination_required,
-                "selected_node": selected_node,
+                "selected_tree_node": selected_tree_node,
+                "selected_likelihood_node": selected_likelihood_node,
                 "selected_mismatch": selected_mismatch,
                 "selected_recombination": selected_recombination,
                 "child_id": child_id,
@@ -308,7 +314,8 @@ def make_long_df(df):
         "likelihoods",
         "likelihood_nodes",
         "recombination_required",
-        "selected_node",
+        "selected_tree_node",
+        "selected_likelihood_node",
         "selected_mismatch",
         "selected_recombination",
         "num_min_likelihood",
@@ -362,7 +369,8 @@ def make_long_df(df):
                 "likelihood_node_id": pd.Series(dtype=np.int32),
                 "likelihood": pd.Series(dtype=np.float64),
                 "recombination_required": pd.Series(dtype=np.int8),
-                "selected_node": pd.Series(dtype=np.int32),
+                "selected_tree_node": pd.Series(dtype=np.int32),
+                "selected_likelihood_node": pd.Series(dtype=np.int32),
                 "selected_mismatch": pd.Series(dtype=np.int8),
                 "selected_recombination": pd.Series(dtype=np.int8),
                 "num_min_likelihood": pd.Series(dtype=np.int64),
@@ -385,8 +393,11 @@ def make_long_df(df):
             "likelihood": likelihood_flat,
             "likelihood_node_id": np.concatenate(likelihood_nodes),
             "recombination_required": np.concatenate(recombination_required),
-            "selected_node": np.repeat(
-                df["selected_node"].to_numpy(dtype=np.int32, copy=False), k
+            "selected_tree_node": np.repeat(
+                df["selected_tree_node"].to_numpy(dtype=np.int32, copy=False), k
+            ),
+            "selected_likelihood_node": np.repeat(
+                df["selected_likelihood_node"].to_numpy(dtype=np.int32, copy=False), k
             ),
             "selected_mismatch": np.repeat(
                 df["selected_mismatch"].to_numpy(dtype=np.int8, copy=False), k
