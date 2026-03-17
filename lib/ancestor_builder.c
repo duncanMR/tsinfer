@@ -420,10 +420,11 @@ ancestor_builder_compute_ancestral_states(const ancestor_builder_t *self, int di
     int64_t l;
     tsk_id_t u;
     size_t j, ones, zeros, tmp_size, sample_set_size, min_sample_set_size, derived_count;
-    double focal_site_time = self->sites[focal_site].time;
+    double focal_site_time;
     double site_time;
     const site_t *restrict sites = self->sites;
     const size_t num_sites = self->num_sites;
+    const size_t num_samples = self->num_samples;
     allele_t consensus;
 
     ancestor_builder_get_consistent_samples(
@@ -481,6 +482,7 @@ ancestor_builder_compute_ancestral_states(const ancestor_builder_t *self, int di
         }
 
         site_time = sites[l].time;
+        focal_site_time = (double) ones / num_samples;
         if (site_time > focal_site_time) {
             if (ones + zeros == 0) {
                 ancestor[l] = TSK_MISSING_DATA;

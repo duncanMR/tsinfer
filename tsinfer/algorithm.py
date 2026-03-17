@@ -213,7 +213,6 @@ class AncestorBuilder:
         At the moment we assume that the derived state is 1. We should alter this so
         that we allow the derived state to be a different non-zero integer.
         """
-        focal_time = self.sites[focal_site].time
         g = self.get_site_genotypes(focal_site)
         sample_set = np.where(g == 1)[0]
         min_sample_set_size = len(sample_set) // 2
@@ -237,7 +236,7 @@ class AncestorBuilder:
                     and (g_l[u] != tskit.MISSING_DATA)
                 ):
                     sample_set[j] = -1
-
+            focal_time = ones / self.num_samples
             if site_time > focal_time:
                 if ones + zeros == 0:
                     a[site_index] = tskit.MISSING_DATA
